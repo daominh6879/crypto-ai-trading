@@ -259,31 +259,65 @@ class ProTradingSystem:
             volume_sell
         )
         
-        # ============ IMPROVED ORIGINAL LOGIC ============
-        # Enhanced trigger conditions with better filters:
+        # ============ OPTIMIZED ENTRY LOGIC (Back to Winning Formula) ============
+        # Keep it simple but effective - focus on strong momentum in strong trends
+
+        # QUALITY-FOCUSED ENTRY LOGIC - Fewer, better trades
+
+        # Enhanced BUY criteria - Very selective
         original_buy_trigger = (
-            (signals_df['rsi'] > 55) &  # Stronger RSI (was 50)
+            # RSI Criteria - Strong momentum
+            (signals_df['rsi'] > 56) &  # Stronger than before (was 54)
             (signals_df['rsi'] < 70) &  # Not overbought
             (signals_df['rsi'] > signals_df['rsi'].shift(1)) &  # RSI rising
+            (signals_df['rsi'] > signals_df['rsi'].shift(3)) &  # Sustained rise
+
+            # MACD Criteria - Strong bullish
             (signals_df['macd_line'] > signals_df['signal_line']) &
             (signals_df['histogram'] > 0) &
-            (signals_df['histogram'] > signals_df['histogram'].shift(1)) &  # MACD accelerating
-            signals_df['volume_vol_bull'] &
+            (signals_df['histogram'] > signals_df['histogram'].shift(1)) &  # Accelerating
+            (signals_df['macd_line'] > signals_df['macd_line'].shift(2)) &  # MACD trending up
+
+            # Trend & Structure - Must be strong
+            (signals_df['close'] > signals_df['ema_20']) &  # Price above EMA20
             (signals_df['close'] > signals_df['ema_50']) &  # Price above EMA50
+            (signals_df['ema_20'] > signals_df['ema_50']) &  # MA alignment
             (signals_df['trend_strong_bullish']) &  # Strong bullish trend
+
+            # Volume - Strong confirmation
+            signals_df['volume_vol_bull'] &
+            (signals_df['volume'] > signals_df['volume'].rolling(20).mean() * 1.1) &  # Above average
+
+            # Market Conditions
             ~signals_df['advanced_high_volatility']  # Avoid high volatility
         )
+
+        # Enhanced SELL criteria - Very selective
         original_sell_trigger = (
-            (signals_df['rsi'] < 45) &  # Stronger RSI (was 50)
+            # RSI Criteria
+            (signals_df['rsi'] < 44) &  # Stronger than before (was 45)
             (signals_df['rsi'] > 30) &  # Not oversold
             (signals_df['rsi'] < signals_df['rsi'].shift(1)) &  # RSI falling
+            (signals_df['rsi'] < signals_df['rsi'].shift(3)) &  # Sustained fall
+
+            # MACD Criteria
             (signals_df['macd_line'] < signals_df['signal_line']) &
             (signals_df['histogram'] < 0) &
-            (signals_df['histogram'] < signals_df['histogram'].shift(1)) &  # MACD accelerating down
-            signals_df['volume_vol_bear'] &
+            (signals_df['histogram'] < signals_df['histogram'].shift(1)) &  # Accelerating down
+            (signals_df['macd_line'] < signals_df['macd_line'].shift(2)) &  # MACD trending down
+
+            # Trend & Structure
+            (signals_df['close'] < signals_df['ema_20']) &  # Price below EMA20
             (signals_df['close'] < signals_df['ema_50']) &  # Price below EMA50
+            (signals_df['ema_20'] < signals_df['ema_50']) &  # MA alignment
             (signals_df['trend_strong_bearish']) &  # Strong bearish trend
-            ~signals_df['advanced_high_volatility']  # Avoid high volatility
+
+            # Volume
+            signals_df['volume_vol_bear'] &
+            (signals_df['volume'] > signals_df['volume'].rolling(20).mean() * 1.1) &
+
+            # Market Conditions
+            ~signals_df['advanced_high_volatility']
         )
         
         # Disable short trades if configured

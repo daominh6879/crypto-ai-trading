@@ -230,25 +230,57 @@ class EnhancedPositionManager:
         return self.enter_position("SHORT", price, timestamp, atr, quantity, order_id)
     
     def update_trailing_stop(self, current_price: float, atr: float):
-        """Update trailing stop loss if position is profitable enough"""
+        """Update trailing stop loss with dynamic trailing based on profit level"""
         if not self.is_in_trade() or not self.current_position:
             return
-        
+
         position = self.current_position
         updated = False
-        
+
         if position.trade_type == "LONG":
-            # Activate trailing stop at 5% profit
-            if current_price > position.entry_price * (1 + self.config.trailing_activation):
-                new_trail = current_price - (atr * self.config.stop_loss_multiplier * self.config.trailing_stop_factor)
+            # Calculate current profit
+            current_profit_pct = (current_price - position.entry_price) / position.entry_price
+
+            # Dynamic trailing based on profit level (professional technique)
+            if getattr(self.config, 'dynamic_trailing', False):
+                if current_profit_pct > 0.06:  # 6%+ profit: very tight trail (40% of initial stop)
+                    trail_factor = 0.40
+                elif current_profit_pct > 0.04:  # 4-6% profit: tight trail (50% of initial stop)
+                    trail_factor = 0.50
+                elif current_profit_pct > 0.02:  # 2-4% profit: normal trail (60% of initial stop)
+                    trail_factor = 0.60
+                else:  # Below 2%: use configured trail factor
+                    trail_factor = self.config.trailing_stop_factor
+            else:
+                trail_factor = self.config.trailing_stop_factor
+
+            # Activate trailing stop at configured profit level
+            if current_profit_pct > self.config.trailing_activation:
+                new_trail = current_price - (atr * self.config.stop_loss_multiplier * trail_factor)
                 if position.trailing_stop is None or new_trail > position.trailing_stop:
                     position.trailing_stop = new_trail
                     updated = True
-        
+
         else:  # SHORT
-            # Activate trailing stop at 5% profit
-            if current_price < position.entry_price * (1 - self.config.trailing_activation):
-                new_trail = current_price + (atr * self.config.stop_loss_multiplier * self.config.trailing_stop_factor)
+            # Calculate current profit
+            current_profit_pct = (position.entry_price - current_price) / position.entry_price
+
+            # Dynamic trailing based on profit level
+            if getattr(self.config, 'dynamic_trailing', False):
+                if current_profit_pct > 0.06:
+                    trail_factor = 0.40
+                elif current_profit_pct > 0.04:
+                    trail_factor = 0.50
+                elif current_profit_pct > 0.02:
+                    trail_factor = 0.60
+                else:
+                    trail_factor = self.config.trailing_stop_factor
+            else:
+                trail_factor = self.config.trailing_stop_factor
+
+            # Activate trailing stop
+            if current_profit_pct > self.config.trailing_activation:
+                new_trail = current_price + (atr * self.config.stop_loss_multiplier * trail_factor)
                 if position.trailing_stop is None or new_trail < position.trailing_stop:
                     position.trailing_stop = new_trail
                     updated = True

@@ -26,29 +26,32 @@ class TradingConfig:
     macd_slow: int = 26
     macd_signal: int = 9
     
-    # ==================== TRADING RULES ====================
-    use_trend_filter: bool = True   # Only trade with EMA200 trend (ENABLED for better quality)
-    min_bars_gap: int = 5          # Increased to reduce overtrading (was 1)
+    # ==================== TRADING RULES (BALANCED QUALITY) ====================
+    use_trend_filter: bool = True   # Only trade with EMA200 trend
+    min_bars_gap: int = 6          # Higher for quality (was 3, tried 8)
     require_confirmation: bool = True  # Wait for confirmation candle
-    allow_short_trades: bool = False   # Disable shorts - focus on longs only
+    allow_short_trades: bool = True   # Enable shorts for both directions
+    require_pullback_entry: bool = False  # Keep simple
 
     # Professional Signal Quality Controls
-    min_risk_reward_ratio: float = 2.0  # Minimum R:R ratio for trade entry
-    max_daily_trades: int = 3          # Limit trades per day to reduce overtrading
-    require_confluence: bool = False     # Disable complex confluence for now
-    ultra_strict_mode: bool = False     # Disable ultra-strict temporarily to allow trades
+    min_risk_reward_ratio: float = 2.8  # Higher R:R target (was 2.5)
+    max_daily_trades: int = 3          # Selective (was 5)
+    require_confluence: bool = False     # Simpler is better (was True)
+    ultra_strict_mode: bool = False     # Disabled for balanced trading
 
     # Volatility Controls
-    max_volatility_threshold: float = 3.0  # Lower threshold to avoid choppy markets (was 3.8)
-    min_trend_strength: float = 0.5       # Stronger trend requirement (was 0.35)
+    max_volatility_threshold: float = 2.9  # Lower - avoid choppy markets (was 3.0)
+    min_trend_strength: float = 0.52       # Stronger trends (was 0.45)
     
-    # ==================== RISK MANAGEMENT ====================
+    # ==================== RISK MANAGEMENT (SWING TRADING) ====================
     atr_length: int = 14
-    stop_loss_multiplier: float = 2.5      # Wider stops to avoid premature exits (was 1.8)
-    take_profit_1_multiplier: float = 3.0  # More realistic TP1 (was 2.2)
-    take_profit_2_multiplier: float = 5.0  # Higher TP2 for better R:R (was 3.5)
-    trailing_stop_factor: float = 0.65     # Tighter trailing to lock profits (was 0.75)
-    trailing_activation: float = 0.02     # Activate trailing at 2% profit (was 2.5%)
+    stop_loss_multiplier: float = 3.0      # WIDER stops for swing trades (was 2.4)
+    take_profit_1_multiplier: float = 4.0  # BIGGER targets (was 3.2)
+    take_profit_2_multiplier: float = 8.0  # HUGE targets for big winners (was 6.0)
+    partial_exit_at_tp1: float = 0.5       # Exit 50% position at TP1, let 50% run to TP2
+    trailing_stop_factor: float = 0.55     # Looser trailing for swing (was 0.62)
+    trailing_activation: float = 0.025     # Activate trailing at 2.5% profit (was 2%)
+    dynamic_trailing: bool = True          # Use dynamic trailing based on profit level
     
     # Enhanced Risk Controls
     max_position_size: float = 0.015        # 1.5% max position size (reduced from 2%)
