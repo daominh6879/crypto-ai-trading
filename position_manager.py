@@ -430,8 +430,12 @@ class EnhancedPositionManager:
     
     def get_trade_statistics(self) -> Dict[str, Any]:
         """Get trading performance statistics (enhanced with database)"""
-        # Get statistics from database if available
-        if self.db:
+        # In backtesting mode, always use local statistics
+        if hasattr(self, 'backtesting_mode') and self.backtesting_mode:
+            # Use local statistics for backtest
+            pass
+        # Get statistics from database if available (live mode only)
+        elif self.db:
             return self.db.get_statistics(self.symbol)
         
         # Fallback to local statistics

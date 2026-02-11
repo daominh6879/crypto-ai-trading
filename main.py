@@ -74,8 +74,14 @@ def run_backtest_demo(symbol: str = "BTCUSDT", config: TradingConfig = None,
     try:
         # Fetch data
         print("📊 Fetching market data...")
-        data = trading_system.fetch_data(symbol)
+        data = trading_system.fetch_data(symbol, start_date=start_date)
         print(f"✅ Loaded {len(data)} bars of data from {data.index[0].date()} to {data.index[-1].date()}")
+        
+        # Show warning if requested start date differs from actual data start
+        if start_date and data.index[0].strftime('%Y-%m-%d') != start_date:
+            print(f"⚠️  Note: You requested start date {start_date}, but actual data starts from {data.index[0].date()}")
+            print(f"    This is due to Binance API limits (max 1000 bars for {config.interval} interval)")
+            print(f"    The backtest will run on the available data range: {data.index[0].date()} to {data.index[-1].date()}")
         
         # Calculate signals
         print("🔍 Calculating technical indicators and signals...")

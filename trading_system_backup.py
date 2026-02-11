@@ -68,16 +68,9 @@ class ProTradingSystem:
         else:
             raise ValueError("Binance provider not available")
     
-    def _fetch_binance_data(self, symbol: str, interval: str, days: int = None, start_date: str = None) -> pd.DataFrame:
-        """Fetch data from Binance with comprehensive multi-chunk support"""
+    def _fetch_binance_data(self, symbol: str, interval: str, days: int = None) -> pd.DataFrame:
+        """Fetch data from Binance"""
         try:
-            print(f"🔍 _fetch_binance_data called with start_date={start_date}")
-            # If start_date is specified, use comprehensive fetching for large date ranges
-            if start_date:
-                print(f"🔄 Using comprehensive fetching for start_date: {start_date}")
-                return self._fetch_comprehensive_data(symbol, interval, start_date)
-            
-            print("📊 Using standard fetching (no start_date)")
             # Calculate days based on lookback period if not specified
             if days is None:
                 lookback = self.config.lookback_period
@@ -90,23 +83,11 @@ class ProTradingSystem:
                 else:
                     days = 365  # Default 1 year
             
-            # For normal fetching without start_date, limit to what fits in 1000 bars
-            days = min(days, 42)  # ~1000 bars for most intervals
-            
-            # Calculate appropriate limit based on interval
-            if interval.endswith('h'):
-                hours_per_bar = int(interval[:-1])
-                bars_per_day = 24 // hours_per_bar
-                limit = min(1000, days * bars_per_day)
-            elif interval.endswith('m'):
-                minutes_per_bar = int(interval[:-1])
-                bars_per_day = (24 * 60) // minutes_per_bar
-                limit = min(1000, days * bars_per_day)
-            else:
-                limit = min(1000, days)  # Daily or default
+            # Limit to Binance API limits
+            days = min(days, 365)  # Max 1 year for most intervals
             
             data = self.binance_provider.get_historical_data(
-                symbol, interval, limit=limit
+                symbol, interval, limit=min(1000, days * 24)
             )
             
             if data.empty:
@@ -117,7 +98,7 @@ class ProTradingSystem:
             
         except Exception as e:
             raise Exception(f"Error fetching data for {symbol}: {str(e)}")
-
+    
     def calculate_signals(self) -> pd.DataFrame:
         """Calculate all trading signals"""
         if self.data is None:
@@ -589,16 +570,9 @@ class ProTradingSystem:
         else:
             raise ValueError("Binance provider not available")
     
-    def _fetch_binance_data(self, symbol: str, interval: str, days: int = None, start_date: str = None) -> pd.DataFrame:
-        """Fetch data from Binance with comprehensive multi-chunk support"""
+    def _fetch_binance_data(self, symbol: str, interval: str, days: int = None) -> pd.DataFrame:
+        """Fetch data from Binance"""
         try:
-            print(f"🔍 _fetch_binance_data called with start_date={start_date}")
-            # If start_date is specified, use comprehensive fetching for large date ranges
-            if start_date:
-                print(f"🔄 Using comprehensive fetching for start_date: {start_date}")
-                return self._fetch_comprehensive_data(symbol, interval, start_date)
-            
-            print("📊 Using standard fetching (no start_date)")
             # Calculate days based on lookback period if not specified
             if days is None:
                 lookback = self.config.lookback_period
@@ -611,23 +585,11 @@ class ProTradingSystem:
                 else:
                     days = 365  # Default 1 year
             
-            # For normal fetching without start_date, limit to what fits in 1000 bars
-            days = min(days, 42)  # ~1000 bars for most intervals
-            
-            # Calculate appropriate limit based on interval
-            if interval.endswith('h'):
-                hours_per_bar = int(interval[:-1])
-                bars_per_day = 24 // hours_per_bar
-                limit = min(1000, days * bars_per_day)
-            elif interval.endswith('m'):
-                minutes_per_bar = int(interval[:-1])
-                bars_per_day = (24 * 60) // minutes_per_bar
-                limit = min(1000, days * bars_per_day)
-            else:
-                limit = min(1000, days)  # Daily or default
+            # Limit to Binance API limits
+            days = min(days, 365)  # Max 1 year for most intervals
             
             data = self.binance_provider.get_historical_data(
-                symbol, interval, limit=limit
+                symbol, interval, limit=min(1000, days * 24)
             )
             
             if data.empty:
@@ -1134,89 +1096,6 @@ class ProTradingSystem:
         except Exception as e:
             print(f"Error getting market info: {e}")
             return {}
-    
-    def _fetch_comprehensive_data(self, symbol: str, interval: str, start_date: str) -> pd.DataFrame:
-        """Fetch comprehensive historical data in chunks to overcome API limits"""
-        from datetime import datetime, timedelta
-        import time
-        
-        print(f"🔄 Fetching comprehensive data from {start_date} to present...")
-        
-        # Parse start date
-        start_dt = datetime.strptime(start_date, '%Y-%m-%d')
-        end_dt = datetime.now()
-        
-        # Calculate bars per day for the interval
-        if interval.endswith('h'):
-            hours_per_bar = int(interval[:-1])
-            bars_per_day = 24 // hours_per_bar
-        elif interval.endswith('m'):
-            minutes_per_bar = int(interval[:-1])
-            bars_per_day = (24 * 60) // minutes_per_bar
-        else:
-            bars_per_day = 1  # Daily
-        
-        # Calculate total days and required chunks
-        total_days = (end_dt - start_dt).days + 1
-        total_bars_needed = total_days * bars_per_day
-        chunks_needed = min(20, (total_bars_needed // 1000) + 1)  # Limit to 20 chunks for safety
-        
-        print(f"📊 Estimated {total_bars_needed:,} bars needed over {total_days} days")
-        print(f"🔄 Will fetch in {chunks_needed} chunks of 1000 bars each")
-        
-        all_data = []
-        current_start = start_date
-        
-        for chunk in range(chunks_needed):
-            try:
-                print(f"   Fetching chunk {chunk + 1}/{chunks_needed} starting from {current_start}...")
-                
-                # Fetch this chunk
-                chunk_data = self.binance_provider.get_historical_data(
-                    symbol, interval, limit=1000, start_str=current_start
-                )
-                
-                if chunk_data.empty:
-                    print(f"   No more data available from {current_start}")
-                    break
-                
-                all_data.append(chunk_data)
-                
-                # Update start point for next chunk (last timestamp + 1 period)
-                last_timestamp = chunk_data.index[-1]
-                if interval.endswith('h'):
-                    next_start = last_timestamp + timedelta(hours=hours_per_bar)
-                elif interval.endswith('m'):
-                    next_start = last_timestamp + timedelta(minutes=minutes_per_bar)
-                else:
-                    next_start = last_timestamp + timedelta(days=1)
-                
-                current_start = next_start.strftime('%Y-%m-%d %H:%M:%S')
-                
-                # Check if we've reached current time or got less than 1000 bars (end of data)
-                if len(chunk_data) < 1000 or last_timestamp >= end_dt:
-                    print(f"   Reached end of available data")
-                    break
-                
-                # Small delay to avoid hitting rate limits
-                time.sleep(0.1)
-                
-            except Exception as e:
-                print(f"   Error fetching chunk {chunk + 1}: {e}")
-                break
-        
-        if not all_data:
-            raise ValueError(f"No data could be fetched for {symbol} from {start_date}")
-        
-        # Combine all chunks
-        combined_data = pd.concat(all_data, ignore_index=False)
-        combined_data = combined_data.drop_duplicates()  # Remove any overlapping data
-        combined_data = combined_data.sort_index()  # Ensure chronological order
-        
-        print(f"✅ Successfully fetched {len(combined_data):,} bars from {combined_data.index[0].date()} to {combined_data.index[-1].date()}")
-        
-        self.data = combined_data
-        return combined_data
     
     def get_popular_symbols(self) -> List[str]:
         """Get list of popular trading symbols"""
