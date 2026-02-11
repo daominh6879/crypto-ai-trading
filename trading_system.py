@@ -165,6 +165,11 @@ class ProTradingSystem:
         for name, series in all_indicators['volume'].items():
             signals_df[f'volume_{name}'] = series
         
+        # Advanced market conditions
+        if 'advanced' in all_indicators:
+            for name, series in all_indicators['advanced'].items():
+                signals_df[f'advanced_{name}'] = series
+        
         # Setup signals
         for name, series in setup_signals.items():
             signals_df[f'setup_{name}'] = series
@@ -176,36 +181,144 @@ class ProTradingSystem:
         return signals_df
     
     def _generate_entry_signals(self, signals_df: pd.DataFrame) -> pd.DataFrame:
-        """Generate buy and sell entry signals matching TradingView Pine Script logic"""
+        """Generate buy and sell entry signals with professional confluence requirements"""
         
-        # Pine Script trigger conditions:
-        # buyTrigger = (rsi > 50) and (macd > signal) and (hist > 0) and volBull
-        buy_trigger = (
+        # ============ PROFESSIONAL BUY CRITERIA ============
+        # 1. Basic Setup: EMA alignment (from original logic)
+        basic_buy_setup = signals_df['setup_buy_setup']
+        
+        # 2. Enhanced RSI Criteria (much more restrictive)
+        rsi_buy_criteria = (
+            (signals_df['rsi'] > 40) &  # RSI above 40 (not oversold)
+            (signals_df['rsi'] < 75) &  # RSI below 75 (not too overbought)
+            signals_df['advanced_rsi_bull_momentum']  # RSI rising with good momentum
+        )
+        
+        # 3. Enhanced MACD Criteria
+        macd_buy_criteria = (
+            (signals_df['macd_line'] > signals_df['signal_line']) &  # MACD bullish
+            (signals_df['histogram'] > 0) &  # Histogram positive
+            signals_df['advanced_macd_accelerating_bull']  # MACD accelerating
+        )
+        
+        # 4. Market Condition Filters
+        market_conditions_buy = (
+            signals_df['advanced_trending_market'] &  # Only trade in trending markets
+            signals_df['advanced_strong_bull_trend'] &  # Strong bullish trend
+            signals_df['advanced_price_momentum_bull'] &  # Price momentum
+            ~signals_df['advanced_high_volatility']  # Avoid high volatility periods
+        )
+        
+        # 5. Volume Confirmation
+        volume_buy = signals_df['volume_vol_bull']
+        
+        # CONFLUENCE BUY SIGNAL: Requires ALL conditions
+        professional_buy_trigger = (
+            basic_buy_setup &
+            rsi_buy_criteria &
+            macd_buy_criteria &
+            market_conditions_buy &
+            volume_buy
+        )
+        
+        # ============ PROFESSIONAL SELL CRITERIA ============
+        # 1. Basic Setup: EMA alignment (from original logic)
+        basic_sell_setup = signals_df['setup_sell_setup']
+        
+        # 2. Enhanced RSI Criteria
+        rsi_sell_criteria = (
+            (signals_df['rsi'] > 25) &  # RSI above 25 (not too oversold)
+            (signals_df['rsi'] < 60) &  # RSI below 60 (not overbought)
+            signals_df['advanced_rsi_bear_momentum']  # RSI falling with good momentum
+        )
+        
+        # 3. Enhanced MACD Criteria
+        macd_sell_criteria = (
+            (signals_df['macd_line'] < signals_df['signal_line']) &  # MACD bearish
+            (signals_df['histogram'] < 0) &  # Histogram negative
+            signals_df['advanced_macd_accelerating_bear']  # MACD accelerating down
+        )
+        
+        # 4. Market Condition Filters
+        market_conditions_sell = (
+            signals_df['advanced_trending_market'] &  # Only trade in trending markets
+            signals_df['advanced_strong_bear_trend'] &  # Strong bearish trend
+            signals_df['advanced_price_momentum_bear'] &  # Price momentum
+            ~signals_df['advanced_high_volatility']  # Avoid high volatility periods
+        )
+        
+        # 5. Volume Confirmation
+        volume_sell = signals_df['volume_vol_bear']
+        
+        # CONFLUENCE SELL SIGNAL: Requires ALL conditions
+        professional_sell_trigger = (
+            basic_sell_setup &
+            rsi_sell_criteria &
+            macd_sell_criteria &
+            market_conditions_sell &
+            volume_sell
+        )
+        
+        # ============ FALLBACK TO ORIGINAL LOGIC ============
+        # Original Pine Script trigger conditions for comparison:
+        original_buy_trigger = (
             (signals_df['rsi'] > 50) &
             (signals_df['macd_line'] > signals_df['signal_line']) &
             (signals_df['histogram'] > 0) &
             signals_df['volume_vol_bull']
         )
-        
-        # sellTrigger = (rsi < 50) and (macd < signal) and (hist < 0) and volBear  
-        sell_trigger = (
+        original_sell_trigger = (
             (signals_df['rsi'] < 50) &
             (signals_df['macd_line'] < signals_df['signal_line']) &
             (signals_df['histogram'] < 0) &
             signals_df['volume_vol_bear']
         )
         
-        # Pine Script final signals:
-        # buySignal = buySetup and buyTrigger and not inTrade
-        # sellSignal = sellSetup and sellTrigger and not inTrade
-        buy_signal = signals_df['setup_buy_setup'] & buy_trigger
-        sell_signal = signals_df['setup_sell_setup'] & sell_trigger
+        # Use ultra-strict or professional signals based on configuration
+        if self.config.ultra_strict_mode:
+            # ULTRA-STRICT BUY: Additional restrictions
+            ultra_buy_filter = (
+                (signals_df['rsi'] > 45) & (signals_df['rsi'] < 70) &  # Tighter RSI range
+                (signals_df['rsi'] > signals_df['rsi'].shift(2)) &      # RSI trending up 
+                (signals_df['histogram'] > signals_df['histogram'].shift(1)) &  # MACD momentum
+                (signals_df['close'] > signals_df['ema_20']) &          # Price above EMA20
+                (signals_df['close'] > signals_df['open']) &            # Green candle
+                signals_df['advanced_normal_volatility'] &              # Normal volatility only
+                (signals_df['advanced_ema_separation_bull'] > 1.0) &    # Strong EMA separation
+                (signals_df['volume'] > signals_df['volume'].rolling(10).mean() * 1.2)  # 20% above avg volume
+            )
+            
+            # ULTRA-STRICT SELL: Additional restrictions  
+            ultra_sell_filter = (
+                (signals_df['rsi'] > 30) & (signals_df['rsi'] < 55) &   # Tighter RSI range
+                (signals_df['rsi'] < signals_df['rsi'].shift(2)) &      # RSI trending down
+                (signals_df['histogram'] < signals_df['histogram'].shift(1)) &  # MACD momentum
+                (signals_df['close'] < signals_df['ema_20']) &          # Price below EMA20
+                (signals_df['close'] < signals_df['open']) &            # Red candle
+                signals_df['advanced_normal_volatility'] &              # Normal volatility only
+                (signals_df['advanced_ema_separation_bear'] > 1.0) &    # Strong EMA separation
+                (signals_df['volume'] > signals_df['volume'].rolling(10).mean() * 1.2)  # 20% above avg volume
+            )
+            
+            buy_trigger = professional_buy_trigger & ultra_buy_filter
+            sell_trigger = professional_sell_trigger & ultra_sell_filter
+        else:
+            # Use ORIGINAL LOGIC with professional risk management
+            buy_trigger = original_buy_trigger
+            sell_trigger = original_sell_trigger
         
-        # Apply gap filter to prevent too frequent signals (from Pine Script gapControl)
+        # Final signals with setup confirmation
+        buy_signal = basic_buy_setup & buy_trigger
+        sell_signal = basic_sell_setup & sell_trigger
+        
+        # Apply gap filter to prevent too frequent signals
         buy_final = buy_signal.copy()
         sell_final = sell_signal.copy()
         
-        if self.config.min_bars_gap > 1:
+        # Use stricter gap in ultra-strict mode
+        min_gap = self.config.min_bars_gap * 2 if self.config.ultra_strict_mode else self.config.min_bars_gap
+        
+        if min_gap > 1:
             # Apply minimum gap between signals
             last_signal_idx = None
             
@@ -220,7 +333,11 @@ class ProTradingSystem:
                         buy_final.iloc[i] = False
                         sell_final.iloc[i] = False
         
-        # Store intermediate signals for debugging
+        # Store all signals for analysis and debugging
+        signals_df['professional_buy_trigger'] = professional_buy_trigger
+        signals_df['professional_sell_trigger'] = professional_sell_trigger
+        signals_df['original_buy_trigger'] = original_buy_trigger
+        signals_df['original_sell_trigger'] = original_sell_trigger
         signals_df['buy_trigger'] = buy_trigger
         signals_df['sell_trigger'] = sell_trigger  
         signals_df['buy_signal'] = buy_signal
@@ -686,6 +803,11 @@ class ProTradingSystem:
         for name, series in all_indicators['volume'].items():
             signals_df[f'volume_{name}'] = series
         
+        # Advanced market conditions  
+        if 'advanced' in all_indicators:
+            for name, series in all_indicators['advanced'].items():
+                signals_df[f'advanced_{name}'] = series
+        
         # Setup signals
         for name, series in setup_signals.items():
             signals_df[f'setup_{name}'] = series
@@ -694,39 +816,6 @@ class ProTradingSystem:
         signals_df = self._generate_entry_signals(signals_df)
         
         self.signals = signals_df
-        return signals_df
-    
-    def _generate_entry_signals(self, signals_df: pd.DataFrame) -> pd.DataFrame:
-        """Generate buy and sell entry signals"""
-        # Buy trigger conditions
-        buy_trigger = (
-            signals_df['setup_buy_setup'].shift(1) &
-            (signals_df['price_bullish_reversal'] | signals_df['price_strong_bull']) &
-            (signals_df['momentum_macd_bull_cross'] | signals_df['momentum_macd_rising']) &
-            signals_df['volume_vol_confirm_buy']
-        )
-        
-        # Sell trigger conditions
-        sell_trigger = (
-            signals_df['setup_sell_setup'].shift(1) &
-            (signals_df['price_bearish_reversal'] | signals_df['price_strong_bear'] | 
-             signals_df['momentum_macd_bear_cross']) &
-            signals_df['volume_vol_confirm_sell']
-        )
-        
-        # Confirmation logic
-        if self.config.require_confirmation:
-            buy_confirmed = buy_trigger & signals_df['price_higher_low']
-            sell_confirmed = sell_trigger & signals_df['price_lower_high']
-        else:
-            buy_confirmed = buy_trigger
-            sell_confirmed = sell_trigger
-        
-        signals_df['buy_trigger'] = buy_trigger
-        signals_df['sell_trigger'] = sell_trigger
-        signals_df['buy_confirmed'] = buy_confirmed
-        signals_df['sell_confirmed'] = sell_confirmed
-        
         return signals_df
     
     def run_backtest(self, start_date: Optional[str] = None, 

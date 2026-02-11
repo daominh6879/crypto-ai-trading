@@ -289,7 +289,8 @@ class TechnicalIndicators:
         price_action = self.calculate_price_action(data)
         volume_analysis = self.calculate_volume_analysis(data)
         
-        return {
+        # Create base indicators dict
+        indicators_base = {
             'ema': ema_data,
             'rsi': rsi,
             'macd': macd_data,
@@ -299,7 +300,90 @@ class TechnicalIndicators:
             'price_action': price_action,
             'volume': volume_analysis
         }
+        
+        # Add advanced conditions
+        try:
+            advanced_conditions = self.calculate_advanced_conditions(indicators_base, data)
+            indicators_base['advanced'] = advanced_conditions
+        except Exception as e:
+            print(f"❌ Error calculating advanced conditions: {e}")
+            # Provide fallback empty advanced conditions
+            indicators_base['advanced'] = {}
+        
+        return indicators_base
     
+    def calculate_advanced_conditions(self, indicators: Dict[str, Any], data: pd.DataFrame) -> Dict[str, pd.Series]:
+        """Calculate advanced market conditions for professional trading"""
+        close = data['Close']
+        high = data['High']
+        low = data['Low']
+        atr = indicators['atr']
+        ema_20 = indicators['ema']['ema_20']
+        ema_50 = indicators['ema']['ema_50']
+        ema_200 = indicators['ema']['ema_200']
+        rsi = indicators['rsi']
+        macd_line = indicators['macd']['macd_line']
+        signal_line = indicators['macd']['signal_line']
+        
+        # 1. TREND STRENGTH ANALYSIS
+        # EMA separation as % of price (stronger trends have wider separation)
+        ema_separation_bull = ((ema_20 - ema_50) / close) * 100
+        ema_separation_bear = ((ema_50 - ema_20) / close) * 100
+        strong_bull_trend = ema_separation_bull > 0.5  # 0.5% minimum separation
+        strong_bear_trend = ema_separation_bear > 0.5
+        
+        # Price momentum (price distance from EMAs)
+        price_above_ema20 = ((close - ema_20) / close) * 100
+        price_momentum_bull = price_above_ema20 > 1.0  # Price 1%+ above EMA20
+        price_momentum_bear = price_above_ema20 < -1.0  # Price 1%+ below EMA20
+        
+        # 2. VOLATILITY FILTERING
+        # ATR-based volatility classification
+        atr_pct = (atr / close) * 100
+        atr_sma = atr_pct.rolling(window=20).mean()
+        high_volatility = atr_pct > atr_sma * 1.5  # 50% above average volatility
+        low_volatility = atr_pct < atr_sma * 0.7   # 30% below average volatility
+        normal_volatility = ~(high_volatility | low_volatility)
+        
+        # 3. MARKET PHASE DETECTION
+        # Trending vs Ranging market detection
+        price_range_20 = high.rolling(20).max() - low.rolling(20).min()
+        price_movement = abs(close - close.shift(20))
+        trending_market = price_movement > (price_range_20 * 0.6)  # 60% of range covered
+        ranging_market = ~trending_market
+        
+        # 4. RSI MOMENTUM QUALITY
+        # RSI slope for momentum confirmation
+        rsi_slope = rsi - rsi.shift(3)
+        rsi_bull_momentum = (rsi > 45) & (rsi < 75) & (rsi_slope > 2)  # Rising RSI in good range
+        rsi_bear_momentum = (rsi < 55) & (rsi > 25) & (rsi_slope < -2)  # Falling RSI in good range
+        
+        # 5. MACD QUALITY
+        # MACD histogram acceleration
+        histogram = indicators['macd']['histogram']
+        histogram_slope = histogram - histogram.shift(2)
+        macd_accelerating_bull = (macd_line > signal_line) & (histogram_slope > 0)
+        macd_accelerating_bear = (macd_line < signal_line) & (histogram_slope < 0)
+        
+        return {
+            'strong_bull_trend': strong_bull_trend,
+            'strong_bear_trend': strong_bear_trend,
+            'price_momentum_bull': price_momentum_bull,
+            'price_momentum_bear': price_momentum_bear,
+            'high_volatility': high_volatility,
+            'low_volatility': low_volatility,
+            'normal_volatility': normal_volatility,
+            'trending_market': trending_market,
+            'ranging_market': ranging_market,
+            'rsi_bull_momentum': rsi_bull_momentum,
+            'rsi_bear_momentum': rsi_bear_momentum,
+            'macd_accelerating_bull': macd_accelerating_bull,
+            'macd_accelerating_bear': macd_accelerating_bear,
+            'ema_separation_bull': ema_separation_bull,
+            'ema_separation_bear': ema_separation_bear,
+            'atr_pct': atr_pct
+        }
+
     def get_setup_signals(self, indicators: Dict[str, Any]) -> Dict[str, pd.Series]:
         """Generate setup signals based on TradingView Pine Script logic"""
         # Get EMAs
@@ -326,3 +410,33 @@ class TechnicalIndicators:
             'sell_setup': sell_setup,
             'setup_status': setup_status
         }
+    
+    def validate_signal_quality(self, indicators: Dict[str, Any], index: int) -> Dict[str, bool]:
+        """Professional signal quality validation for individual trade setups"""
+        try:
+            # Extract current values
+            atr_pct = indicators['advanced']['atr_pct'].iloc[index]
+            trending = indicators['advanced']['trending_market'].iloc[index]
+            high_vol = indicators['advanced']['high_volatility'].iloc[index]
+            
+            # EMA separation strength
+            ema_sep_bull = indicators['advanced']['ema_separation_bull'].iloc[index]
+            ema_sep_bear = indicators['advanced']['ema_separation_bear'].iloc[index]
+            
+            # Market condition validations
+            volatility_ok = not high_vol and atr_pct < self.config.max_volatility_threshold
+            trend_strong = trending and (ema_sep_bull > self.config.min_trend_strength or 
+                                       ema_sep_bear > self.config.min_trend_strength)
+            
+            return {
+                'volatility_acceptable': volatility_ok,
+                'trend_strength_ok': trend_strong,
+                'overall_quality': volatility_ok and trend_strong
+            }
+        except (IndexError, KeyError):
+            # Fallback for missing data
+            return {
+                'volatility_acceptable': True,
+                'trend_strength_ok': True,
+                'overall_quality': True
+            }
