@@ -28,26 +28,27 @@ class TradingConfig:
     
     # ==================== TRADING RULES ====================
     use_trend_filter: bool = True   # Only trade with EMA200 trend (ENABLED for better quality)
-    min_bars_gap: int = 1          # Minimal gap for professional frequency (was 2)
+    min_bars_gap: int = 5          # Increased to reduce overtrading (was 1)
     require_confirmation: bool = True  # Wait for confirmation candle
-    
+    allow_short_trades: bool = False   # Disable shorts - focus on longs only
+
     # Professional Signal Quality Controls
-    min_risk_reward_ratio: float = 2.5  # Minimum R:R ratio for trade entry (increased)
-    max_daily_trades: int = 5          # Allow more trades per day (was 3)
+    min_risk_reward_ratio: float = 2.0  # Minimum R:R ratio for trade entry
+    max_daily_trades: int = 3          # Limit trades per day to reduce overtrading
     require_confluence: bool = False     # Disable complex confluence for now
     ultra_strict_mode: bool = False     # Disable ultra-strict temporarily to allow trades
-    
+
     # Volatility Controls
-    max_volatility_threshold: float = 3.8  # Professional volatility control (was 3.2)
-    min_trend_strength: float = 0.35       # Professional trend requirement (was 0.5)
+    max_volatility_threshold: float = 3.0  # Lower threshold to avoid choppy markets (was 3.8)
+    min_trend_strength: float = 0.5       # Stronger trend requirement (was 0.35)
     
     # ==================== RISK MANAGEMENT ====================
     atr_length: int = 14
-    stop_loss_multiplier: float = 1.8      # Slightly wider stops for better win rate
-    take_profit_1_multiplier: float = 2.2  # Closer TP1 for more wins
-    take_profit_2_multiplier: float = 3.5  # Reasonable TP2 
-    trailing_stop_factor: float = 0.75     # Good trailing balance
-    trailing_activation: float = 0.025     # 2.5% profit to activate trailing
+    stop_loss_multiplier: float = 2.5      # Wider stops to avoid premature exits (was 1.8)
+    take_profit_1_multiplier: float = 3.0  # More realistic TP1 (was 2.2)
+    take_profit_2_multiplier: float = 5.0  # Higher TP2 for better R:R (was 3.5)
+    trailing_stop_factor: float = 0.65     # Tighter trailing to lock profits (was 0.75)
+    trailing_activation: float = 0.02     # Activate trailing at 2% profit (was 2.5%)
     
     # Enhanced Risk Controls
     max_position_size: float = 0.015        # 1.5% max position size (reduced from 2%)

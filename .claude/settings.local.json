@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python main.py:*)",
+      "Bash(ls:*)",
+      "Bash(chcp 65001)"
+    ]
+  }
+}

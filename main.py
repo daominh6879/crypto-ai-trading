@@ -12,6 +12,12 @@ from typing import Optional
 import warnings
 warnings.filterwarnings('ignore')
 
+# Fix Windows console encoding for emoji support
+if sys.platform == 'win32':
+    import io
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+
 # Import configuration
 from config import TradingConfig, DEFAULT_CONFIG, SCALPING_CONFIG, SWING_CONFIG, CONSERVATIVE_CONFIG
 
@@ -447,7 +453,7 @@ def main():
     if args.interval:
         selected_config.interval = args.interval
     
-    print("🎯 PRO TRADER SYSTEM v3.0")
+    print("PRO TRADER SYSTEM v3.0")
     print("Live Trading Application based on TradingView Pine Script")
     print(f"Mode: {args.mode.upper()}")
     print(f"Symbol: {args.symbol}")

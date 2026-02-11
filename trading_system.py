@@ -259,21 +259,38 @@ class ProTradingSystem:
             volume_sell
         )
         
-        # ============ FALLBACK TO ORIGINAL LOGIC ============
-        # Original Pine Script trigger conditions for comparison:
+        # ============ IMPROVED ORIGINAL LOGIC ============
+        # Enhanced trigger conditions with better filters:
         original_buy_trigger = (
-            (signals_df['rsi'] > 50) &
+            (signals_df['rsi'] > 55) &  # Stronger RSI (was 50)
+            (signals_df['rsi'] < 70) &  # Not overbought
+            (signals_df['rsi'] > signals_df['rsi'].shift(1)) &  # RSI rising
             (signals_df['macd_line'] > signals_df['signal_line']) &
             (signals_df['histogram'] > 0) &
-            signals_df['volume_vol_bull']
+            (signals_df['histogram'] > signals_df['histogram'].shift(1)) &  # MACD accelerating
+            signals_df['volume_vol_bull'] &
+            (signals_df['close'] > signals_df['ema_50']) &  # Price above EMA50
+            (signals_df['trend_strong_bullish']) &  # Strong bullish trend
+            ~signals_df['advanced_high_volatility']  # Avoid high volatility
         )
         original_sell_trigger = (
-            (signals_df['rsi'] < 50) &
+            (signals_df['rsi'] < 45) &  # Stronger RSI (was 50)
+            (signals_df['rsi'] > 30) &  # Not oversold
+            (signals_df['rsi'] < signals_df['rsi'].shift(1)) &  # RSI falling
             (signals_df['macd_line'] < signals_df['signal_line']) &
             (signals_df['histogram'] < 0) &
-            signals_df['volume_vol_bear']
+            (signals_df['histogram'] < signals_df['histogram'].shift(1)) &  # MACD accelerating down
+            signals_df['volume_vol_bear'] &
+            (signals_df['close'] < signals_df['ema_50']) &  # Price below EMA50
+            (signals_df['trend_strong_bearish']) &  # Strong bearish trend
+            ~signals_df['advanced_high_volatility']  # Avoid high volatility
         )
         
+        # Disable short trades if configured
+        if not getattr(self.config, 'allow_short_trades', True):
+            original_sell_trigger[:] = False  # Disable all sell signals
+            professional_sell_trigger[:] = False
+
         # Use ultra-strict or professional signals based on configuration
         if self.config.ultra_strict_mode:
             # ULTRA-STRICT BUY: Additional restrictions
