@@ -90,8 +90,9 @@ def run_backtest_demo(symbol: str = "BTCUSDT", config: TradingConfig = None,
             print(f"    This is due to Binance API limits (max 1000 bars for {config.interval} interval)")
             print(f"    The backtest will run on the available data range: {data.index[0].date()} to {data.index[-1].date()}")
         
-        # Calculate signals
+        # Calculate signals with proper date range for regime detection
         print("[*] Calculating technical indicators and signals...")
+        # Calculate signals
         signals = trading_system.calculate_signals()
         print("✅ Signals calculated successfully")
         

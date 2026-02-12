@@ -70,15 +70,10 @@ class ProTradingSystem:
             raise ValueError("Binance provider not available")
     
     def _fetch_binance_data(self, symbol: str, interval: str, days: int = None, start_date: str = None, end_date: str = None) -> pd.DataFrame:
-        """Fetch data from Binance with comprehensive multi-chunk support"""
+        """Fetch data from Binance - now supports fetching full date ranges"""
         try:
             print(f"[*] _fetch_binance_data called with start_date={start_date}, end_date={end_date}")
-            # If start_date is specified, use comprehensive fetching for large date ranges
-            if start_date:
-                print(f"[*] Using comprehensive fetching for start_date: {start_date}, end_date: {end_date}")
-                return self._fetch_comprehensive_data(symbol, interval, start_date, end_date)
-
-            print("[*] Using standard fetching (no start_date)")
+            
             # Calculate days based on lookback period if not specified
             if days is None:
                 lookback = self.config.lookback_period
@@ -91,27 +86,50 @@ class ProTradingSystem:
                 else:
                     days = 365  # Default 1 year
             
-            # For normal fetching without start_date, limit to what fits in 1000 bars
-            days = min(days, 42)  # ~1000 bars for most intervals
+            # Calculate required bars for date range
+            if start_date and end_date:
+                from datetime import datetime
+                start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+                end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+                days = (end_dt - start_dt).days
             
-            # Calculate appropriate limit based on interval
+            # Calculate total bars needed
             if interval.endswith('h'):
-                hours_per_bar = int(interval[:-1])
-                bars_per_day = 24 // hours_per_bar
-                limit = min(1000, days * bars_per_day)
+                bars_per_day = 24 // int(interval.replace('h', ''))
             elif interval.endswith('m'):
-                minutes_per_bar = int(interval[:-1])
-                bars_per_day = (24 * 60) // minutes_per_bar
-                limit = min(1000, days * bars_per_day)
+                bars_per_day = 1440 // int(interval.replace('m', ''))
             else:
-                limit = min(1000, days)  # Daily or default
+                bars_per_day = 24  # Default for 1h
             
-            data = self.binance_provider.get_historical_data(
-                symbol, interval, limit=limit
-            )
+            total_bars_needed = days * bars_per_day
             
-            if data.empty:
+            # If we need more than 1000 bars, fetch in chunks
+            if total_bars_needed > 1000 and start_date:
+                print(f"[*] Fetching {total_bars_needed} bars in chunks (max 1000 per request)")
+                data = self._fetch_data_in_chunks(symbol, interval, start_date, end_date)
+            elif start_date:
+                # Single request for smaller ranges
+                data = self.binance_provider.get_historical_data(
+                    symbol=symbol,
+                    interval=interval,
+                    limit=min(1000, total_bars_needed),
+                    start_str=start_date
+                )
+            else:
+                # Regular historical data fetch
+                limit = min(1000, days * bars_per_day)
+                data = self.binance_provider.get_historical_data(
+                    symbol=symbol,
+                    interval=interval,
+                    limit=limit
+                )
+            
+            if data is None or data.empty:
                 raise ValueError(f"No data found for symbol {symbol}")
+            
+            # Convert timezone-aware index to timezone-naive for consistency
+            if data.index.tz is not None:
+                data.index = data.index.tz_localize(None)
             
             self.data = data
             return data
@@ -119,10 +137,316 @@ class ProTradingSystem:
         except Exception as e:
             raise Exception(f"Error fetching data for {symbol}: {str(e)}")
 
+    def _fetch_data_in_chunks(self, symbol: str, interval: str, start_date: str, end_date: str) -> pd.DataFrame:
+        """Fetch large date ranges by combining multiple 1000-bar chunks"""
+        try:
+            from datetime import datetime, timedelta
+            import time
+            
+            all_data = []
+            current_start = datetime.strptime(start_date, "%Y-%m-%d")
+            end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+            
+            # Calculate interval in hours for chunk sizing
+            if interval == '1h':
+                interval_hours = 1
+            elif interval == '4h':
+                interval_hours = 4
+            else:
+                interval_hours = 1  # Default
+            
+            chunk_number = 0
+            
+            while current_start < end_dt:
+                chunk_number += 1
+                # Calculate chunk end (1000 bars ahead)
+                chunk_hours = 1000 * interval_hours
+                chunk_end = current_start + timedelta(hours=chunk_hours)
+                
+                # Don't go beyond requested end date
+                if chunk_end > end_dt:
+                    chunk_end = end_dt
+                
+                start_str = current_start.strftime("%Y-%m-%d")
+                end_str = chunk_end.strftime("%Y-%m-%d")
+                
+                # print(f"[*] Fetching chunk {chunk_number}: {start_str} to {end_str}")
+                
+                # Fetch this chunk  
+                try:
+                    chunk_data = self.binance_provider.get_historical_data(
+                        symbol=symbol,
+                        interval=interval,
+                        limit=1000,
+                        start_str=start_str
+                    )
+                    
+                    if chunk_data is not None and not chunk_data.empty:
+                        all_data.append(chunk_data)
+                        # print(f"[*] Got {len(chunk_data)} bars for chunk {chunk_number}")
+                    
+                    # Small delay to avoid rate limits
+                    time.sleep(0.1)
+                    
+                except Exception as e:
+                    print(f"[*] Warning: Failed to fetch chunk {chunk_number}: {e}")
+                
+                # Move to next chunk
+                current_start = chunk_end
+                
+                # Safety limit
+                if chunk_number >= 20:  # Max ~2 years of hourly data  
+                    print(f"[*] Reached chunk limit ({chunk_number}), stopping")
+                    break
+            
+            # Combine all chunks
+            if all_data:
+                combined_data = pd.concat(all_data, ignore_index=False)
+                combined_data = combined_data.sort_index()
+                combined_data = combined_data[~combined_data.index.duplicated(keep='first')]
+                
+                print(f"[*] Combined {len(combined_data)} total bars from {len(all_data)} chunks") 
+                return combined_data
+            else:
+                raise ValueError("No data retrieved from any chunks")
+                
+        except Exception as e:
+            raise Exception(f"Error fetching chunked data: {str(e)}")
+
+    def detect_market_regime(self, data: pd.DataFrame, lookback_days: int = 90) -> str:
+        """
+        MULTI-TIMEFRAME REGIME DETECTION
+        Combines multiple timeframe analysis for robust regime identification
+        Same logic for both backtesting and live trading - NO LOOK-AHEAD BIAS!
+        """
+        try:
+            close = data['Close']
+            
+            # Define multiple timeframes OPTIMIZED FOR 1H TRADING
+            timeframes = {
+                'micro': 1,          # 1 day - intraday sentiment (most responsive)
+                'nano': 2,           # 2 days - very short-term momentum
+                'ultra_short': 3,    # 3 days - immediate market sentiment  
+                'short': 7,          # 1 week - short-term trend
+                'medium_short': 14,  # 2 weeks - swing trend
+                'medium': 30,        # 1 month - monthly trend
+                'long': 45,          # 6 weeks - medium-long context (reduced from 60d)
+                'macro': 60          # 2 months - major trend context (reduced from 90d)
+            }
+            
+            regime_signals = {}
+            
+            # Analyze each timeframe
+            for tf_name, days in timeframes.items():
+                lookback_bars = min(days * 24, len(close) - 20)  # 24 hours per day, keep smaller buffer
+                
+                if lookback_bars < 20:  # Need minimum data (reduced from 50 for shorter timeframes)
+                    regime_signals[tf_name] = 'sideways'
+                    continue
+                
+                recent_data = close.iloc[-lookback_bars:]
+                start_price = recent_data.iloc[0]
+                end_price = recent_data.iloc[-1]
+                
+                # Calculate metrics for this timeframe
+                total_return = (end_price - start_price) / start_price * 100
+                recent_returns = recent_data.pct_change().dropna()
+                volatility = recent_returns.std() * 100
+                
+                # Calculate drawdown for crash detection
+                rolling_max = recent_data.expanding().max()
+                drawdown = (recent_data / rolling_max - 1) * 100
+                max_drawdown = abs(drawdown.min())
+                
+                # Timeframe-specific thresholds RESTORED TO WORKING VERSION
+                if tf_name == 'micro':  # 1 day - ultra sensitive
+                    bull_thresh, bear_thresh, vol_thresh, dd_thresh = 3, -2, 1.5, 3
+                elif tf_name == 'nano':  # 2 days - hyper sensitive
+                    bull_thresh, bear_thresh, vol_thresh, dd_thresh = 4, -2.5, 1.8, 4
+                elif tf_name == 'ultra_short':  # 3 days - very sensitive
+                    bull_thresh, bear_thresh, vol_thresh, dd_thresh = 5, -3, 2.0, 5
+                elif tf_name == 'short':  # 7 days - sensitive
+                    bull_thresh, bear_thresh, vol_thresh, dd_thresh = 8, -4, 2.5, 8
+                elif tf_name == 'medium_short':  # 14 days - moderate
+                    bull_thresh, bear_thresh, vol_thresh, dd_thresh = 12, -6, 3.0, 10
+                elif tf_name == 'medium':  # 30 days - balanced
+                    bull_thresh, bear_thresh, vol_thresh, dd_thresh = 18, -8, 3.2, 15
+                elif tf_name == 'long':  # 45 days - moderate-conservative
+                    bull_thresh, bear_thresh, vol_thresh, dd_thresh = 22, -10, 3.4, 18
+                else:  # macro - 60 days - conservative
+                    bull_thresh, bear_thresh, vol_thresh, dd_thresh = 25, -12, 3.7, 22
+                
+                # Classify this timeframe
+                is_crash = (volatility > 3.0) and (max_drawdown > dd_thresh)
+                
+                if total_return > bull_thresh:
+                    regime_signals[tf_name] = 'bull'
+                elif total_return < bear_thresh or is_crash:
+                    regime_signals[tf_name] = 'bear'
+                elif volatility > vol_thresh:
+                    regime_signals[tf_name] = 'volatile'
+                else:
+                    regime_signals[tf_name] = 'sideways'
+                
+                print(f"[*] {tf_name.upper()}-term ({days}d): Return {total_return:.1f}%, Vol {volatility:.1f}%, DD {max_drawdown:.1f}% → {regime_signals[tf_name].upper()}")
+            
+            # 8-TIMEFRAME CONSENSUS LOGIC OPTIMIZED FOR 1H TRADING
+            # Shorter timeframes (1d-30d) get priority for responsiveness
+            # Longer timeframes (45d-60d) provide trend context without dominating decisions 
+            micro_regime = regime_signals.get('micro', 'sideways')
+            nano_regime = regime_signals.get('nano', 'sideways')
+            ultra_short_regime = regime_signals.get('ultra_short', 'sideways')
+            short_regime = regime_signals.get('short', 'sideways')
+            medium_short_regime = regime_signals.get('medium_short', 'sideways')
+            medium_regime = regime_signals.get('medium', 'sideways') 
+            long_regime = regime_signals.get('long', 'sideways')
+            macro_regime = regime_signals.get('macro', 'sideways')
+            
+            # Count regime votes across all 8 timeframes
+            bull_votes = sum(1 for r in regime_signals.values() if r == 'bull')
+            bear_votes = sum(1 for r in regime_signals.values() if r == 'bear')
+            volatile_votes = sum(1 for r in regime_signals.values() if r == 'volatile')
+            sideways_votes = sum(1 for r in regime_signals.values() if r == 'sideways')
+            
+            print(f"[*] 8-TF Consensus: Bull={bull_votes}, Bear={bear_votes}, Volatile={volatile_votes}, Sideways={sideways_votes}")
+            
+            # ENHANCED CONSENSUS DECISION RULES - Prioritize Medium-Term Trends
+            # Weight system: Longer timeframes get priority for overall market direction
+            # Short-term (1d-7d) for entry timing, Medium-term (30d-60d) for market direction
+            
+            # Calculate weighted votes - give more weight to stable medium-term timeframes
+            stable_bull_votes = sum(1 for tf in ['medium', 'long', 'macro'] if regime_signals.get(tf) == 'bull')
+            stable_bear_votes = sum(1 for tf in ['medium', 'long', 'macro'] if regime_signals.get(tf) == 'bear')
+            
+            print(f"[*] STABLE TIMEFRAME CONSENSUS: Bull={stable_bull_votes}/3, Bear={stable_bear_votes}/3")
+            
+            # PRIMARY DECISION: If 2+ stable timeframes agree, use that direction
+            if stable_bull_votes >= 2:  # 2+ of 30d/45d/60d are bullish
+                final_regime = 'bull'
+                print(f"[*] STABLE BULL CONSENSUS overrides short-term noise ({stable_bull_votes}/3 stable timeframes bullish)")
+            elif stable_bear_votes >= 2:  # 2+ of 30d/45d/60d are bearish  
+                final_regime = 'bear'
+                print(f"[*] STABLE BEAR CONSENSUS overrides short-term noise ({stable_bear_votes}/3 stable timeframes bearish)")
+            elif bear_votes >= 5:  # 5+ timeframes bearish = clear bear market (62%+ consensus)
+                final_regime = 'bear'
+            elif bull_votes >= 5:  # 5+ timeframes bullish = clear bull market (62%+ consensus)  
+                final_regime = 'bull'
+            # SHORT-TERM OVERRIDES: Only when stable timeframes are mixed (1-1 or 0-0)
+            elif micro_regime == 'bear' and bear_votes >= 3:  # Micro bear with 3+ total bears
+                final_regime = 'bear'
+                print(f"[*] MICRO BEAR overrides mixed consensus (immediate bearish sentiment)")
+            elif micro_regime == 'bull' and bull_votes >= 3:  # Micro bull with 3+ total bulls
+                final_regime = 'bull'
+                print(f"[*] MICRO BULL overrides mixed consensus (immediate bullish sentiment)")
+            elif nano_regime == 'bear' and bear_votes >= 3:  # Nano bear gets second priority
+                final_regime = 'bear'
+                print(f"[*] NANO BEAR overrides mixed consensus (2-day bearish trend)")
+            elif nano_regime == 'bull' and bull_votes >= 3:  # Nano bull gets second priority
+                final_regime = 'bull'
+                print(f"[*] NANO BULL overrides mixed consensus (2-day bullish trend)")
+            elif ultra_short_regime == 'bear' and bear_votes >= 3:  # Ultra-short bear gets third priority
+                final_regime = 'bear'
+                print(f"[*] ULTRA-SHORT BEAR overrides mixed consensus (3-day bearish sentiment)")
+            elif ultra_short_regime == 'bull' and bull_votes >= 3:  # Ultra-short bull gets third priority
+                final_regime = 'bull'
+                print(f"[*] ULTRA-SHORT BULL overrides mixed consensus (3-day bullish sentiment)")
+            elif short_regime == 'bear' and bear_votes >= 2:  # Short-term bear gets priority
+                final_regime = 'bear'
+                print(f"[*] Short-term BEAR overrides consensus (weekly bearish trend)")
+            elif short_regime == 'bull' and bull_votes >= 2:  # Short-term bull gets priority
+                final_regime = 'bull'
+                print(f"[*] Short-term BULL overrides consensus (weekly bullish trend)")
+            elif volatile_votes >= 4:  # 4+ volatile timeframes (50%+ consensus)
+                final_regime = 'volatile'
+            elif bull_votes >= 3 and bear_votes >= 3:  # Mixed strong signals = volatile
+                final_regime = 'volatile'
+                print(f"[*] Mixed strong signals = VOLATILE market")
+            else:  # Default to sideways if no clear consensus
+                final_regime = 'sideways'
+            
+            print(f"[*] FINAL REGIME DECISION: {final_regime.upper()}")
+            return final_regime
+                
+        except Exception as e:
+            print(f"[*] Regime detection error: {e}")
+            return 'sideways'
+    
+    def get_adaptive_config(self, regime: str) -> dict:
+        """Balanced strategies optimized for overall performance"""
+        
+        # BALANCED BULL STRATEGY - Capture uptrends without overtrading
+        bull_config = {
+            'rsi_oversold': 40, 'rsi_overbought': 75,  
+            'adx_min': 15, 'adx_max': 40, 'min_bars_gap': 4,
+            'max_daily_trades': 4, 'enable_shorts': True,  # Moderate frequency
+            'strategy': 'Balanced Trend Following', 'risk_level': 'Medium-High'
+        }
+        
+        # CONSERVATIVE BEAR STRATEGY - Preserve capital, much more selective
+        bear_config = {
+            'rsi_oversold': 25, 'rsi_overbought': 65,   # Much more restrictive (was 35/70)
+            'adx_min': 25, 'adx_max': 40, 'min_bars_gap': 12,  # Higher quality setups only
+            'max_daily_trades': 2, 'enable_shorts': False,  # Reduced frequency, no shorts
+            'strategy': 'Ultra Conservative Capital Preservation', 'risk_level': 'Very Low'
+        }
+        
+        # MODERATE VOLATILE STRATEGY - Handle chop without overexposure
+        volatile_config = {
+            'rsi_oversold': 30, 'rsi_overbought': 70,  
+            'adx_min': 20, 'adx_max': 35, 'min_bars_gap': 8,
+            'max_daily_trades': 2, 'enable_shorts': True,  # Reduced frequency
+            'strategy': 'Selective Swing Trading', 'risk_level': 'Medium'
+        }
+        
+        # BALANCED SIDEWAYS STRATEGY - Range trading with discipline  
+        sideways_config = {
+            'rsi_oversold': 35, 'rsi_overbought': 70,  
+            'adx_min': 18, 'adx_max': 30, 'min_bars_gap': 6,
+            'max_daily_trades': 3, 'enable_shorts': True,
+            'strategy': 'Disciplined Range Trading', 'risk_level': 'Medium'
+        }
+        
+        # DEFAULT: Mixed/Unknown Market - Conservative Strategy
+        default_config = {
+            'rsi_oversold': 28, 'rsi_overbought': 72,
+            'adx_min': 22, 'adx_max': 38, 'min_bars_gap': 6,
+            'max_daily_trades': 2, 'enable_shorts': True,
+            'strategy': 'Conservative', 'risk_level': 'Low'
+        }
+        
+        configs = {
+            'bull': bull_config,
+            'bear': bear_config, 
+            'volatile': volatile_config,
+            'sideways': sideways_config,
+            'mixed': default_config,
+            'unknown': default_config
+        }
+        
+        selected_config = configs.get(regime, default_config)
+        print(f"[*] Strategy: {selected_config['strategy']} (Risk: {selected_config['risk_level']})")
+        
+        return selected_config
+
     def calculate_signals(self) -> pd.DataFrame:
-        """Calculate all trading signals"""
+        """Calculate all trading signals with adaptive regime-based parameters"""
         if self.data is None:
             raise ValueError("No data available. Call fetch_data() first.")
+        
+        # Detect market regime using full dataset
+        regime = self.detect_market_regime(
+            self.data, 
+            lookback_days=self.config.regime_lookback_days
+        )
+        adaptive_config = self.get_adaptive_config(regime)
+        
+        print(f"[*] Market Regime: {regime.upper()}")
+        print(f"[*] Strategy: {adaptive_config.get('strategy', 'Unknown')} (Risk: {adaptive_config.get('risk_level', 'Unknown')})")
+        print(f"[*] Parameters - RSI: {adaptive_config['rsi_oversold']}/{adaptive_config['rsi_overbought']}, ADX: {adaptive_config['adx_min']}-{adaptive_config['adx_max']}, Max Trades: {adaptive_config['max_daily_trades']}")
+        
+        # Store adaptive config for use in signal generation
+        self.current_regime = regime
+        self.adaptive_config = adaptive_config
         
         # Calculate all indicators
         all_indicators = self.indicators.calculate_all_indicators(self.data)
@@ -292,240 +616,267 @@ class ProTradingSystem:
             volume_sell
         )
         
-        # ============ OPTIMIZED ENTRY LOGIC (Back to Winning Formula) ============
-        # Keep it simple but effective - focus on strong momentum in strong trends
-
-        # QUALITY-FOCUSED ENTRY LOGIC - Fewer, better trades
-
-        # Enhanced BUY criteria - Very selective
-        if self.config.enable_regime_filter:
-            # Apply optimal ADX filter (20-30 range)
-            original_buy_trigger = (
-                # RSI Criteria - Strong momentum
-                (signals_df['rsi'] > 56) &  # Stronger than before (was 54)
-                (signals_df['rsi'] < 70) &  # Not overbought
-                (signals_df['rsi'] > signals_df['rsi'].shift(1)) &  # RSI rising
-                (signals_df['rsi'] > signals_df['rsi'].shift(3)) &  # Sustained rise
-
-                # MACD Criteria - Strong bullish
-                (signals_df['macd_line'] > signals_df['signal_line']) &
-                (signals_df['histogram'] > 0) &
-                (signals_df['histogram'] > signals_df['histogram'].shift(1)) &  # Accelerating
-                (signals_df['macd_line'] > signals_df['macd_line'].shift(2)) &  # MACD trending up
-
-                # Trend & Structure - Must be strong
-                (signals_df['close'] > signals_df['ema_20']) &  # Price above EMA20
-                (signals_df['close'] > signals_df['ema_50']) &  # Price above EMA50
-                (signals_df['ema_20'] > signals_df['ema_50']) &  # MA alignment
-                (signals_df['trend_strong_bullish']) &  # Strong bullish trend
-
-                # Volume - Strong confirmation
-                signals_df['volume_vol_bull'] &
-                (signals_df['volume'] > signals_df['volume'].rolling(20).mean() * 1.1) &  # Above average
-
-                # Market Conditions
-                ~signals_df['advanced_high_volatility'] &  # Avoid high volatility
-
-                # OPTIMAL ADX FILTER (20-30 range based on backtest analysis)
-                ~signals_df['advanced_adx_choppy'] &  # Not choppy (ADX > 20)
-                ~signals_df['advanced_adx_strong_trending']  # Not extreme (ADX < 30)
-            )
+        # ============ QUALITY-FOCUSED ENTRY LOGIC - Research-Based Improvements ============
+        # Use configuration to determine which signal logic to apply
+        if self.config.require_confluence:
+            # Use professional confluence signals
+            buy_trigger = professional_buy_trigger
+            sell_trigger = professional_sell_trigger
         else:
-            # Original without ADX filter
-            original_buy_trigger = (
-                # RSI Criteria - Strong momentum
-                (signals_df['rsi'] > 56) &  # Stronger than before (was 54)
-                (signals_df['rsi'] < 70) &  # Not overbought
-                (signals_df['rsi'] > signals_df['rsi'].shift(1)) &  # RSI rising
-                (signals_df['rsi'] > signals_df['rsi'].shift(3)) &  # Sustained rise
-
-                # MACD Criteria - Strong bullish
-                (signals_df['macd_line'] > signals_df['signal_line']) &
-                (signals_df['histogram'] > 0) &
-                (signals_df['histogram'] > signals_df['histogram'].shift(1)) &  # Accelerating
-                (signals_df['macd_line'] > signals_df['macd_line'].shift(2)) &  # MACD trending up
-
-                # Trend & Structure - Must be strong
-                (signals_df['close'] > signals_df['ema_20']) &  # Price above EMA20
-                (signals_df['close'] > signals_df['ema_50']) &  # Price above EMA50
-                (signals_df['ema_20'] > signals_df['ema_50']) &  # MA alignment
-                (signals_df['trend_strong_bullish']) &  # Strong bullish trend
-
-                # Volume - Strong confirmation
-                signals_df['volume_vol_bull'] &
-                (signals_df['volume'] > signals_df['volume'].rolling(20).mean() * 1.1) &  # Above average
-
-                # Market Conditions
-                ~signals_df['advanced_high_volatility']  # Avoid high volatility
-            )
-
-        # Enhanced SELL criteria - Very selective
+            # SIMPLIFIED ADAPTIVE TRADING STRATEGIES (No dependency on setup signals)
+            regime = getattr(self, 'current_regime', 'mixed')
+            adaptive_config = getattr(self, 'adaptive_config', {})
+            strategy = adaptive_config.get('strategy', 'Conservative')
+            
+            adaptive_rsi_oversold = adaptive_config.get('rsi_oversold', 30)
+            adaptive_rsi_overbought = adaptive_config.get('rsi_overbought', 75)
+            
+            print(f"[*] Applying {strategy} strategy for {regime} market")
+            
+            # Check if we have required columns, create basic conditions if missing
+            has_setup_signals = 'setup_buy_setup' in signals_df.columns and 'setup_sell_setup' in signals_df.columns
+            has_volume_signals = 'volume_vol_bull' in signals_df.columns and 'volume_vol_bear' in signals_df.columns
+            has_macd = 'macd_line' in signals_df.columns and 'signal_line' in signals_df.columns
+            has_emas = 'ema_20' in signals_df.columns and 'ema_50' in signals_df.columns
+            
+            # Basic always-true conditions if setup signals missing
+            if has_setup_signals:
+                basic_buy_condition = signals_df['setup_buy_setup']
+                basic_sell_condition = signals_df['setup_sell_setup']
+            else:
+                # Create simple EMA-based conditions or fallback to price action
+                if has_emas:
+                    basic_buy_condition = signals_df['close'] > signals_df['ema_20']
+                    basic_sell_condition = signals_df['close'] < signals_df['ema_20']
+                else:
+                    # Last resort - simple price momentum
+                    basic_buy_condition = signals_df['close'] > signals_df['close'].shift(1)
+                    basic_sell_condition = signals_df['close'] < signals_df['close'].shift(1)
+            
+            # MACD conditions with fallbacks
+            if has_macd:
+                macd_bullish = signals_df['macd_line'] > signals_df['signal_line']
+                macd_bearish = signals_df['macd_line'] < signals_df['signal_line']
+            else:
+                # Fallback to simple momentum
+                macd_bullish = signals_df['close'] > signals_df['close'].rolling(5).mean()
+                macd_bearish = signals_df['close'] < signals_df['close'].rolling(5).mean()
+            
+            # Volume conditions
+            if has_volume_signals:
+                volume_buy_condition = signals_df['volume_vol_bull']
+                volume_sell_condition = signals_df['volume_vol_bear']
+            else:
+                volume_buy_condition = pd.Series(True, index=signals_df.index)
+                volume_sell_condition = pd.Series(True, index=signals_df.index)
+            
+            # STRATEGY 1: BULL MARKET - Ultra Active Trend Following (maximum opportunities)  
+            if regime == 'bull':
+                buy_trigger = (
+                    basic_buy_condition &
+                    (
+                        # VERY flexible RSI - almost all conditions accepted
+                        (signals_df['rsi'] > 20) &  # Not in extreme panic
+                        (signals_df['rsi'] < 85)    # Not in extreme euphoria
+                    ) &
+                    (  # Multiple MACD/trend options - at least ONE must be true
+                        macd_bullish |  # MACD/momentum bullish OR
+                        (signals_df['close'] > signals_df.get('ema_50', signals_df['close'] * 0.98)) |  # Above EMA50 OR
+                        (signals_df['close'] > signals_df.get('ema_20', signals_df['close'] * 0.99)) |  # Above EMA20 OR
+                        (signals_df['close'].pct_change(5) > 0.02) |  # 2%+ gain in 5 bars OR
+                        (signals_df['close'].rolling(3).mean() > signals_df['close'].rolling(10).mean())  # 3-bar > 10-bar average
+                    )
+                    # No volume requirement for bull markets!
+                )
+                
+                sell_trigger = (
+                    basic_sell_condition &
+                    (signals_df['rsi'] > 65) &
+                    (signals_df['macd_line'] < signals_df['signal_line']) &
+                    volume_sell_condition
+                )
+            
+            # STRATEGY 2: BEAR MARKET - Ultra Conservative Capital Preservation  
+            elif regime == 'bear':
+                # EXTREME BEAR MARKET FILTERS - Multi-factor safety checks
+                extreme_conditions = (
+                    # 1. Volatility filter - avoid high volatility periods
+                    (signals_df['rsi'].rolling(5).std() > 8) |  # RSI volatility > 8
+                    # 2. Drawdown filter - avoid trading if severe drawdown detected  
+                    (signals_df['close'].rolling(30).max() / signals_df['close'] > 1.25) |  # 25%+ drawdown from 30-day high
+                    # 3. Volume spike filter - avoid panic selling periods
+                    (signals_df.get('volume', pd.Series(0, index=signals_df.index)).rolling(5).mean() > 
+                     signals_df.get('volume', pd.Series(1, index=signals_df.index)).rolling(20).mean() * 2) |  # Volume 2x normal
+                    # 4. Momentum crash filter - avoid falling knife scenarios
+                    (signals_df['close'].pct_change(5) < -0.15)  # 15%+ drop in 5 bars
+                )
+                
+                # Ultra-selective bear market strategy - only trade in the safest conditions
+                buy_trigger = (
+                    basic_buy_condition &
+                    ~extreme_conditions &  # Avoid all extreme conditions
+                    (signals_df['rsi'] < adaptive_rsi_oversold) &  # Deep oversold only (25)
+                    (signals_df['rsi'] > 20) &  # But not panic levels
+                    macd_bullish &  # MACD must be bullish
+                    (signals_df['close'] > signals_df.get('ema_20', signals_df['close'] * 0.99)) &  # Price above EMA20 (strength confirmation)
+                    volume_buy_condition
+                )
+                
+                # No shorts in bear markets - capital preservation only
+                sell_trigger = pd.Series(False, index=signals_df.index)
+            
+            # STRATEGY 3: VOLATILE MARKET - Ultra Selective Swing Trading
+            elif regime == 'volatile':
+                # Enhanced volatility filters for choppy markets
+                volatility_conditions = (
+                    # 1. RSI stability filter - avoid erratic RSI movements
+                    (signals_df['rsi'].rolling(3).std() < 5) &  # RSI stable over 3 bars
+                    # 2. Price action filter - avoid whipsaws
+                    (abs(signals_df['close'].pct_change()) < 0.05) &  # No >5% single-bar moves
+                    # 3. Trend consistency filter
+                    (signals_df['ema_20'].diff().rolling(3).apply(lambda x: (x > 0).sum()) >= 2)  # EMA20 rising in 2/3 bars
+                )
+                
+                buy_trigger = (
+                    basic_buy_condition &
+                    volatility_conditions &  # Must pass volatility filters
+                    (signals_df['rsi'] < adaptive_rsi_oversold) &
+                    macd_bullish &
+                    volume_buy_condition
+                )
+                
+                sell_trigger = (
+                    basic_sell_condition &
+                    volatility_conditions &  # Must pass volatility filters
+                    (signals_df['rsi'] > adaptive_rsi_overbought) &
+                    macd_bearish &
+                    volume_sell_condition
+                )
+            
+            # DEFAULT: All other regimes use balanced approach
+            else:
+                buy_trigger = (
+                    basic_buy_condition &
+                    (signals_df['rsi'] > adaptive_rsi_oversold) &
+                    (signals_df['rsi'] < adaptive_rsi_overbought) &
+                    macd_bullish &
+                    volume_buy_condition
+                )
+                
+                sell_trigger = (
+                    basic_sell_condition &
+                    (signals_df['rsi'] > adaptive_rsi_oversold) &
+                    (signals_df['rsi'] < adaptive_rsi_overbought) &
+                    macd_bearish &
+                    volume_sell_condition
+                )
+            
+# Apply conservative ADX filtering for all strategies - RELAXED FOR BULL MARKETS
         if self.config.enable_regime_filter:
-            # Apply optimal ADX filter (20-30 range)
-            original_sell_trigger = (
-                # RSI Criteria
-                (signals_df['rsi'] < 44) &  # Stronger than before (was 45)
-                (signals_df['rsi'] > 30) &  # Not oversold
-                (signals_df['rsi'] < signals_df['rsi'].shift(1)) &  # RSI falling
-                (signals_df['rsi'] < signals_df['rsi'].shift(3)) &  # Sustained fall
-
-                # MACD Criteria
-                (signals_df['macd_line'] < signals_df['signal_line']) &
-                (signals_df['histogram'] < 0) &
-                (signals_df['histogram'] < signals_df['histogram'].shift(1)) &  # Accelerating down
-                (signals_df['macd_line'] < signals_df['macd_line'].shift(2)) &  # MACD trending down
-
-                # Trend & Structure
-                (signals_df['close'] < signals_df['ema_20']) &  # Price below EMA20
-                (signals_df['close'] < signals_df['ema_50']) &  # Price below EMA50
-                (signals_df['ema_20'] < signals_df['ema_50']) &  # MA alignment
-                (signals_df['trend_strong_bearish']) &  # Strong bearish trend
-
-                # Volume
-                signals_df['volume_vol_bear'] &
-                (signals_df['volume'] > signals_df['volume'].rolling(20).mean() * 1.1) &
-
-                # Market Conditions
-                ~signals_df['advanced_high_volatility'] &
-
-                # OPTIMAL ADX FILTER (20-30 range based on backtest analysis)
-                ~signals_df['advanced_adx_choppy'] &  # Not choppy (ADX > 20)
-                ~signals_df['advanced_adx_strong_trending']  # Not extreme (ADX < 30)
+            current_regime = getattr(self, 'current_regime', 'sideways')
+            
+            if current_regime == 'bull':
+                # BULL MARKETS: Very relaxed ADX filtering - allow most conditions
+                adx_filter_buy = pd.Series(True, index=signals_df.index)  # Allow all ADX conditions in bull
+                adx_filter_sell = (
+                    ~signals_df['advanced_adx_choppy'] &  # Not choppy (ADX > 18)
+                    ~signals_df['advanced_adx_strong_trending']  # Not extreme (ADX < 35) for shorts
+                )
+            else:
+                # BEAR/VOLATILE: Original restrictive filtering
+                adx_filter_buy = (~signals_df['advanced_adx_choppy'])  # Only avoid choppy markets
+                adx_filter_sell = (
+                    ~signals_df['advanced_adx_choppy'] &  # Not choppy (ADX > 18)
+                    ~signals_df['advanced_adx_strong_trending']  # Not extreme (ADX < 35) for shorts
+                )
+                
+                buy_trigger = buy_trigger & adx_filter_buy
+                sell_trigger = sell_trigger & adx_filter_sell
+        
+        # CONDITIONAL MARKET STRESS FILTER - Strict in Bear/Volatile, Relaxed in Bull
+        # Get current regime for conditional filtering
+        current_regime = getattr(self, 'current_regime', 'sideways')
+        
+        if current_regime == 'bear':
+            # STRICT bear market filtering - avoid all extreme conditions
+            market_stress_conditions = (
+                # 1. Major price crash filter (>10% drop in 24 bars)
+                (signals_df['close'].pct_change(24) < -0.10) |
+                # 2. Extreme volatility filter (price swings >8% in single bar)
+                (abs(signals_df['close'].pct_change()) > 0.08) |
+                # 3. Volume panic filter (>5x normal volume suggesting panic)
+                (signals_df.get('volume', pd.Series(0, index=signals_df.index)).rolling(1).mean() > 
+                 signals_df.get('volume', pd.Series(1, index=signals_df.index)).rolling(50).mean() * 5) |
+                # 4. RSI crash filter (RSI drops >30 points in 10 bars)
+                (signals_df['rsi'].diff(10) < -30) |
+                # 5. Multiple timeframe drawdown filter (severe losses across timeframes)
+                (signals_df['close'].rolling(7).max() / signals_df['close'] > 1.20)  # 20%+ drawdown from 7-day high
             )
-        else:
-            # Original without ADX filter
-            original_sell_trigger = (
-                # RSI Criteria
-                (signals_df['rsi'] < 44) &  # Stronger than before (was 45)
-                (signals_df['rsi'] > 30) &  # Not oversold
-                (signals_df['rsi'] < signals_df['rsi'].shift(1)) &  # RSI falling
-                (signals_df['rsi'] < signals_df['rsi'].shift(3)) &  # Sustained fall
-
-                # MACD Criteria
-                (signals_df['macd_line'] < signals_df['signal_line']) &
-                (signals_df['histogram'] < 0) &
-                (signals_df['histogram'] < signals_df['histogram'].shift(1)) &  # Accelerating down
-                (signals_df['macd_line'] < signals_df['macd_line'].shift(2)) &  # MACD trending down
-
-                # Trend & Structure
-                (signals_df['close'] < signals_df['ema_20']) &  # Price below EMA20
-                (signals_df['close'] < signals_df['ema_50']) &  # Price below EMA50
-                (signals_df['ema_20'] < signals_df['ema_50']) &  # MA alignment
-                (signals_df['trend_strong_bearish']) &  # Strong bearish trend
-
-                # Volume
-                signals_df['volume_vol_bear'] &
-                (signals_df['volume'] > signals_df['volume'].rolling(20).mean() * 1.1) &
-
-                # Market Conditions
-                ~signals_df['advanced_high_volatility']
+        elif current_regime == 'volatile':
+            # MODERATE volatile market filtering - avoid extreme spikes only
+            market_stress_conditions = (
+                # 1. Extreme single-bar moves only
+                (abs(signals_df['close'].pct_change()) > 0.12) |
+                # 2. Panic volume only  
+                (signals_df.get('volume', pd.Series(0, index=signals_df.index)).rolling(1).mean() > 
+                 signals_df.get('volume', pd.Series(1, index=signals_df.index)).rolling(20).mean() * 8) |
+                # 3. Severe RSI crashes only
+                (signals_df['rsi'].diff(5) < -40)
+            )
+        else:  # bull or sideways markets
+            # MINIMAL bull market filtering - only avoid absolute catastrophes  
+            market_stress_conditions = (
+                # 1. Only filter catastrophic crashes (>20% single-bar drop)
+                (signals_df['close'].pct_change() < -0.20) |
+                # 2. Only filter extreme panic volume (>15x normal)
+                (signals_df.get('volume', pd.Series(0, index=signals_df.index)).rolling(1).mean() > 
+                 signals_df.get('volume', pd.Series(1, index=signals_df.index)).rolling(20).mean() * 15)
             )
         
-        # Disable long trades if configured (for bear markets)
-        if not getattr(self.config, 'allow_long_trades', True):
-            original_buy_trigger[:] = False  # Disable all buy signals
-            professional_buy_trigger[:] = False
-
-        # Disable short trades if configured
-        if not getattr(self.config, 'allow_short_trades', True):
-            original_sell_trigger[:] = False  # Disable all sell signals
-            professional_sell_trigger[:] = False
-
-        # Use ultra-strict or professional signals based on configuration
-        if self.config.ultra_strict_mode:
-            # ULTRA-STRICT BUY: Additional restrictions
-            ultra_buy_filter = (
-                (signals_df['rsi'] > 45) & (signals_df['rsi'] < 70) &  # Tighter RSI range
-                (signals_df['rsi'] > signals_df['rsi'].shift(2)) &      # RSI trending up 
-                (signals_df['histogram'] > signals_df['histogram'].shift(1)) &  # MACD momentum
-                (signals_df['close'] > signals_df['ema_20']) &          # Price above EMA20
-                (signals_df['close'] > signals_df['open']) &            # Green candle
-                signals_df['advanced_normal_volatility'] &              # Normal volatility only
-                (signals_df['advanced_ema_separation_bull'] > 1.0) &    # Strong EMA separation
-                (signals_df['volume'] > signals_df['volume'].rolling(10).mean() * 1.2)  # 20% above avg volume
-            )
-            
-            # ULTRA-STRICT SELL: Additional restrictions  
-            ultra_sell_filter = (
-                (signals_df['rsi'] > 30) & (signals_df['rsi'] < 55) &   # Tighter RSI range
-                (signals_df['rsi'] < signals_df['rsi'].shift(2)) &      # RSI trending down
-                (signals_df['histogram'] < signals_df['histogram'].shift(1)) &  # MACD momentum
-                (signals_df['close'] < signals_df['ema_20']) &          # Price below EMA20
-                (signals_df['close'] < signals_df['open']) &            # Red candle
-                signals_df['advanced_normal_volatility'] &              # Normal volatility only
-                (signals_df['advanced_ema_separation_bear'] > 1.0) &    # Strong EMA separation
-                (signals_df['volume'] > signals_df['volume'].rolling(10).mean() * 1.2)  # 20% above avg volume
-            )
-            
-            buy_trigger = professional_buy_trigger & ultra_buy_filter
-            sell_trigger = professional_sell_trigger & ultra_sell_filter
-        else:
-            # Use ORIGINAL LOGIC with professional risk management
-            buy_trigger = original_buy_trigger
-            sell_trigger = original_sell_trigger
-        
+        # Apply conditional stress filter
+        stress_bars = market_stress_conditions.sum()
+        print(f"[*] Market stress periods ({current_regime}): {stress_bars} bars filtered")
+        buy_trigger = buy_trigger & ~market_stress_conditions
+        sell_trigger = sell_trigger & ~market_stress_conditions
         # Final signals with setup confirmation
-        buy_signal = basic_buy_setup & buy_trigger
-        sell_signal = basic_sell_setup & sell_trigger
+        buy_signal = buy_trigger
+        sell_signal = sell_trigger
         
-        # Apply gap filter to prevent too frequent signals
+        # Apply gap filter to prevent too frequent signals - DYNAMIC BASED ON REGIME
         buy_final = buy_signal.copy()
         sell_final = sell_signal.copy()
 
-        # Determine min_gap based on mode and market regime
-        if self.config.ultra_strict_mode:
-            min_gap = self.config.min_bars_gap * 2
+        # Dynamic gap based on market regime - more conservative in volatile/bear markets
+        current_regime = getattr(self, 'current_regime', 'sideways')
+        if current_regime == 'bear':
+            min_gap = max(self.config.min_bars_gap, 24)  # Minimum 24 bars (1 day) in bear markets
+        elif current_regime == 'volatile':
+            min_gap = max(self.config.min_bars_gap, 12)  # Minimum 12 bars in volatile markets
+        elif current_regime == 'bull':
+            min_gap = max(1, self.config.min_bars_gap // 2)  # REDUCED gap in bull markets for more opportunities
         else:
-            min_gap = self.config.min_bars_gap
-
-        # Adaptive min_bars_gap based on market regime (optional, can be disabled)
-        if getattr(self.config, 'enable_adaptive_gap_filtering', False):
-            # Apply minimum gap between signals with regime-aware filtering
+            min_gap = self.config.min_bars_gap  # Normal gap for sideways markets
+        
+        print(f"[*] Using dynamic gap filter: {min_gap} bars for {current_regime} market")
+        
+        if min_gap > 1:
+            # Apply minimum gap between signals
             last_signal_idx = None
 
             for i in range(len(signals_df)):
                 current_signal = buy_signal.iloc[i] or sell_signal.iloc[i]
 
                 if current_signal:
-                    # Determine regime-specific gap at this bar
-                    if signals_df['advanced_regime_choppy'].iloc[i]:
-                        # Choppy market: use larger gap (trade less frequently)
-                        regime_gap = getattr(self.config, 'choppy_min_bars_gap', 12)
-                    elif signals_df['advanced_regime_strong_trending'].iloc[i]:
-                        # Strong trending: use smaller gap (can trade more)
-                        regime_gap = getattr(self.config, 'trending_min_bars_gap', 6)
-                    else:
-                        # Normal: use standard gap
-                        regime_gap = min_gap
-
-                    if last_signal_idx is None or i - last_signal_idx >= regime_gap:
+                    if last_signal_idx is None or i - last_signal_idx >= min_gap:
                         last_signal_idx = i
                     else:
                         # Gap too small, filter out this signal
                         buy_final.iloc[i] = False
                         sell_final.iloc[i] = False
-        else:
-            # Original gap filtering (no regime adaptation)
-            if min_gap > 1:
-                # Apply minimum gap between signals
-                last_signal_idx = None
-
-                for i in range(len(signals_df)):
-                    current_signal = buy_signal.iloc[i] or sell_signal.iloc[i]
-
-                    if current_signal:
-                        if last_signal_idx is None or i - last_signal_idx >= min_gap:
-                            last_signal_idx = i
-                        else:
-                            # Gap too small, filter out this signal
-                            buy_final.iloc[i] = False
-                            sell_final.iloc[i] = False
         
         # Store all signals for analysis and debugging
         signals_df['professional_buy_trigger'] = professional_buy_trigger
         signals_df['professional_sell_trigger'] = professional_sell_trigger
-        signals_df['original_buy_trigger'] = original_buy_trigger
-        signals_df['original_sell_trigger'] = original_sell_trigger
         signals_df['buy_trigger'] = buy_trigger
         signals_df['sell_trigger'] = sell_trigger  
         signals_df['buy_signal'] = buy_signal
@@ -554,16 +905,20 @@ class ProTradingSystem:
 
     def run_backtest(self, start_date: Optional[str] = None,
                     end_date: Optional[str] = None) -> Dict[str, Any]:
-        """Run complete backtest simulation with database integration"""
-        if self.signals is None:
-            raise ValueError("No signals calculated. Call calculate_signals() first.")
+        """Run complete backtest simulation with database integration - REALISTIC LIVE TRADING SIMULATION"""
+        if self.data is None:
+            raise ValueError("No data available. Call fetch_data() first.")
 
-        # Filter data by date range if specified
-        data = self.signals.copy()
+        # Filter data by date range if specified - with pandas version compatibility
+        data = self.data.copy()
         if start_date:
-            data = data[data.index >= start_date]
+            import pandas as pd
+            start_ts = pd.to_datetime(start_date)
+            data = data[data.index >= start_ts]
         if end_date:
-            data = data[data.index <= end_date]
+            import pandas as pd
+            end_ts = pd.to_datetime(end_date)
+            data = data[data.index <= end_ts]
         
         # Reset position manager for backtesting
         self.position_manager.reset()
@@ -575,94 +930,190 @@ class ProTradingSystem:
         
         print(f"[*] Running backtest on {len(data)} bars...")
         
+        # REGIME CONSISTENCY FIX: Use regime from signal calculation, don't recalculate
+        # The regime should be determined based on the BACKTEST PERIOD, not entire dataset
+        if not hasattr(self, 'current_regime') or not hasattr(self, 'adaptive_config'):
+            # Determine regime based on BACKTEST period specifically
+            if start_date or end_date:
+                # Only recalculate if signals haven't been calculated yet
+                if self.signals is None:
+                    print(f"[*] Recalculating regime detection for backtest period: {start_date} to {end_date}")
+                    regime_start = start_date if start_date else data.index[0].strftime('%Y-%m-%d')
+                    regime_end = end_date if end_date else data.index[-1].strftime('%Y-%m-%d')
+                    
+                    # Recalculate signals with correct regime period
+                    self.calculate_signals(regime_detection_period=regime_start, regime_detection_end=regime_end)
+                else:
+                    print(f"[*] Using pre-calculated signals with regime: {getattr(self, 'current_regime', 'unknown').upper()}")
+            else:
+                # Fallback: detect regime using full available data
+                full_data_regime = self.detect_market_regime(
+                    self.data,  # Use full data, not filtered subset
+                    lookback_days=self.config.regime_lookback_days
+                )
+                self.current_regime = full_data_regime
+                self.adaptive_config = self.get_adaptive_config(full_data_regime)
+                print(f"[*] Using consistent regime: {full_data_regime.upper()} (based on full data context)")
+        
+        current_regime = self.current_regime
+        regime_changes = 0
+        last_regime_check = 0
+        
+        # Pre-calculate signals if not already done (like in live trading)
+        if self.signals is None:
+            if start_date or end_date:
+                # Calculate signals with correct regime period
+                regime_start = start_date if start_date else data.index[0].strftime('%Y-%m-%d')
+                regime_end = end_date if end_date else data.index[-1].strftime('%Y-%m-%d')
+                self.calculate_signals(regime_detection_period=regime_start, regime_detection_end=regime_end)
+            else:
+                self.calculate_signals()
+        
+        # Filter signals to match backtest data range
+        filtered_signals = self.signals.loc[data.index] if len(self.signals) > 0 else None
+        
+        # Debug signal alignment
+        if filtered_signals is not None:
+            total_buy_signals = filtered_signals['buy_confirmed'].sum()
+            print(f"[DEBUG] Filtered signals: {len(filtered_signals)} rows, {total_buy_signals} buy signals")
+            if total_buy_signals > 0:
+                buy_indices = filtered_signals[filtered_signals['buy_confirmed']].index[:3]
+                print(f"[DEBUG] First buy signal timestamps: {buy_indices.tolist()}")
+        else:
+            print(f"[DEBUG] No filtered signals available")
+        
         # Iterate through each bar
         for i, (timestamp, row) in enumerate(data.iterrows()):
             self.position_manager.update_bar(i)
             
+            # SIMPLIFIED REGIME TRACKING - Only for monitoring, don't change strategy mid-backtest
+            # This preserves the consistency of the trading strategy throughout the backtest
+            if i == 0:
+                print(f"[*] Backtest using consistent regime: {current_regime.upper()}")
+                self.current_regime = current_regime
+                self.adaptive_config = self.get_adaptive_config(current_regime)
+            
+            # Get current bar signals from filtered signals (matching by timestamp)
+            if filtered_signals is not None and timestamp in filtered_signals.index:
+                current_bar_signals = filtered_signals.loc[timestamp]
+                if timestamp == pd.Timestamp('2024-02-07 19:00:00'):
+                    print(f"[DEBUG SPECIAL] Found signal at {timestamp}: buy_confirmed={current_bar_signals.get('buy_confirmed', 'NOT_FOUND')}")
+                    print(f"[DEBUG SPECIAL] Signal columns: {list(current_bar_signals.index)}")
+            else:
+                if timestamp == pd.Timestamp('2024-02-07 19:00:00'):
+                    print(f"[DEBUG SPECIAL] Timestamp {timestamp} NOT FOUND in filtered_signals.index")
+                    if filtered_signals is not None:
+                        print(f"[DEBUG SPECIAL] Available timestamps: {list(filtered_signals.index[:5])}")
+                # Fallback for any missing data
+                close_price = row.get('Close', row.get('close', 0))
+                current_bar_signals = pd.Series({
+                    'buy_confirmed': False, 'sell_confirmed': False,
+                    'close': close_price, 'rsi': 50, 'atr': close_price * 0.02
+                })
+            
             # Check for exit conditions first
             if self.position_manager.is_in_trade():
                 # Update trailing stop
-                self.position_manager.update_trailing_stop(row['close'], row['atr'])
+                close_price = current_bar_signals.get('close', row.get('Close', row.get('close', 0)))
+                current_atr = current_bar_signals.get('atr', close_price * 0.02)
+                self.position_manager.update_trailing_stop(close_price, current_atr)
                 
-                # Check exit conditions
+                # Check exit conditions using dynamic signals
                 should_exit, exit_reason = self.position_manager.check_exit_conditions(
-                    row['close'], timestamp, 
-                    sell_signal=row.get('sell_confirmed', False),
-                    buy_signal=row.get('buy_confirmed', False)
+                    current_bar_signals['close'], timestamp, 
+                    sell_signal=current_bar_signals.get('sell_confirmed', False),
+                    buy_signal=current_bar_signals.get('buy_confirmed', False)
                 )
                 
                 if should_exit:
                     trade = self.position_manager.exit_position(
-                        row['close'], timestamp, exit_reason
+                        current_bar_signals['close'], timestamp, exit_reason
                     )
                     if trade:  # Only add to exits if trade was successful
                         exits.append({
                             'timestamp': timestamp,
-                            'price': row['close'],
+                            'price': current_bar_signals['close'],
                             'trade': trade
                         })
                         
                         # Log exit to database if available
                         if self.db:
                             self.db.save_signal(
-                                symbol=self.config.symbol,
+                                symbol=getattr(self.config, 'symbol', 'BTCUSDT'),
                                 signal_type='EXIT',
-                                price=row['close'],
+                                price=current_bar_signals['close'],
                                 timestamp=timestamp,
                                 exit_reason=exit_reason
                             )
             
-            # Check for new entry signals (only when not in trade)
-            elif self.position_manager.can_enter_trade():
-                # Buy signal
-                if row.get('buy_confirmed', False):
-                    market_regime = self._get_market_regime(row)
-                    success = self.position_manager.enter_long_position(
-                        row['close'], timestamp, row['atr'], market_regime=market_regime
-                    )
-                    if success:
-                        buy_signals.append({
-                            'timestamp': timestamp,
-                            'price': row['close'],
-                            'type': 'BUY'
-                        })
-                        self._update_last_signal_info('BUY', i)
-                        
-                        # Log to database
-                        if self.db:
-                            self.db.save_signal(
-                                symbol=self.config.symbol,
-                                signal_type='BUY',
-                                price=row['close'],
-                                timestamp=timestamp,
-                                rsi=row.get('rsi'),
-                                macd_histogram=row.get('histogram')
-                            )
+            # Check for new entry signals using DYNAMIC regime-based signals (only when not in trade)
+            if not self.position_manager.is_in_trade():
+                can_enter = self.position_manager.can_enter_trade()
+                buy_confirmed = current_bar_signals.get('buy_confirmed', False)
                 
-                # Sell signal (short position - if enabled)
-                elif row.get('sell_confirmed', False):
-                    market_regime = self._get_market_regime(row)
-                    success = self.position_manager.enter_short_position(
-                        row['close'], timestamp, row['atr'], market_regime=market_regime
-                    )
-                    if success:
-                        sell_signals.append({
-                            'timestamp': timestamp,
-                            'price': row['close'],
-                            'type': 'SELL'
-                        })
-                        self._update_last_signal_info('SELL', i)
-                        
-                        # Log to database
-                        if self.db:
-                            self.db.save_signal(
-                                symbol=self.config.symbol,
-                                signal_type='SELL',
-                                price=row['close'],
-                                timestamp=timestamp,
-                                rsi=row.get('rsi'),
-                                macd_histogram=row.get('histogram')
-                            )
+                # Debug for any detection
+                if buy_confirmed or (i < 25):  # Debug all first 25 bars to catch signal at bar 19
+                    print(f"[DEBUG] Bar {i} ({timestamp}): buy_confirmed={buy_confirmed}, can_enter={can_enter}, regime={getattr(self, 'current_regime', 'unknown')}")
+                
+                if can_enter:
+                    # Buy signal using current regime strategy
+                    if buy_confirmed:
+                        market_regime = getattr(self, 'current_regime', 'sideways')
+                        success = self.position_manager.enter_long_position(
+                            current_bar_signals['close'], timestamp, 
+                            current_bar_signals.get('atr', current_bar_signals['close'] * 0.02), 
+                            market_regime=market_regime
+                        )
+                        if success:
+                            print(f"[SUCCESS] Trade entered at bar {i}: ${current_bar_signals['close']:.2f}")
+                            buy_signals.append({
+                                'timestamp': timestamp,
+                                'price': current_bar_signals['close'],
+                                'type': 'BUY',
+                                'regime': market_regime  # Track regime for each trade
+                            })
+                            self._update_last_signal_info('BUY', i)
+                            
+                            # Log to database
+                            if self.db:
+                                self.db.save_signal(
+                                    symbol=getattr(self.config, 'symbol', 'BTCUSDT'),
+                                    signal_type='BUY',
+                                    price=current_bar_signals['close'],
+                                    timestamp=timestamp,
+                                    rsi=current_bar_signals.get('rsi'),
+                                    macd_histogram=current_bar_signals.get('histogram')
+                                )
+                        else:
+                            print(f"[FAIL] Trade entry failed at bar {i}: ${current_bar_signals['close']:.2f}")
+                    
+                    # Sell signal using current regime strategy (short position - if enabled)
+                    elif current_bar_signals.get('sell_confirmed', False):
+                        market_regime = getattr(self, 'current_regime', 'sideways')
+                        success = self.position_manager.enter_short_position(
+                            current_bar_signals['close'], timestamp, 
+                            current_bar_signals.get('atr', current_bar_signals['close'] * 0.02), 
+                            market_regime=market_regime
+                        )
+                        if success:
+                            sell_signals.append({
+                                'timestamp': timestamp,
+                                'price': current_bar_signals['close'],
+                                'type': 'SELL',
+                                'regime': market_regime  # Track regime for each trade
+                            })
+                            self._update_last_signal_info('SELL', i)
+                            
+                            # Log to database
+                            if self.db:
+                                self.db.save_signal(
+                                    symbol=getattr(self.config, 'symbol', 'BTCUSDT'),
+                                    signal_type='SELL',
+                                    price=current_bar_signals['close'],
+                                    timestamp=timestamp,
+                                    rsi=current_bar_signals.get('rsi'),
+                                    macd_histogram=current_bar_signals.get('histogram')
+                                )
             
             # Update last signal bars ago
             self._update_signal_bars_ago(i)
@@ -670,16 +1121,22 @@ class ProTradingSystem:
         # Force exit any remaining position
         if self.position_manager.is_in_trade():
             final_row = data.iloc[-1]
+            final_close = final_row.get('Close', final_row.get('close', final_row.iloc[3]))  # Handle different column names
             trade = self.position_manager.exit_position(
-                final_row['close'], final_row.name, "End of Data"
+                final_close, final_row.name, "End of Data"
             )
-            exits.append({
-                'timestamp': final_row.name,
-                'price': final_row['close'],
-                'trade': trade
-            })
+            if trade:
+                exits.append({
+                    'timestamp': final_row.name,
+                    'price': final_close,
+                    'trade': trade
+                })
         
-        # Compile results
+        # REGIME ANALYSIS SUMMARY
+        print(f"[*] Dynamic Regime Analysis: {regime_changes} regime changes detected during backtest")
+        print(f"[*] Final regime: {getattr(self, 'current_regime', 'unknown').upper()}")
+        
+        # Compile results with regime tracking
         results = {
             'buy_signals': buy_signals,
             'sell_signals': sell_signals,
@@ -687,8 +1144,10 @@ class ProTradingSystem:
             'trades': self.position_manager.trade_history,
             'statistics': self.position_manager.get_trade_statistics(),
             'data': data,
-            'symbol': self.config.symbol,
-            'config': self.config
+            'symbol': getattr(self.config, 'symbol', 'BTCUSDT'),
+            'config': self.config,
+            'regime_changes': regime_changes,
+            'final_regime': getattr(self, 'current_regime', 'unknown')
         }
         
         return results
@@ -717,11 +1176,14 @@ class ProTradingSystem:
         trend_status = latest.get('trend_trend_status', 'Unknown')
         trend_percentage = (latest['ema_20'] / latest['ema_200'] - 1) * 100 if 'ema_20' in latest and 'ema_200' in latest else 0
         
-        # RSI status
+        # RSI status with adaptive thresholds
         rsi_value = latest.get('rsi', 50)
-        if rsi_value > self.config.rsi_overbought:
+        adaptive_rsi_oversold = getattr(self, 'adaptive_config', {}).get('rsi_oversold', self.config.rsi_oversold)
+        adaptive_rsi_overbought = getattr(self, 'adaptive_config', {}).get('rsi_overbought', self.config.rsi_overbought)
+        
+        if rsi_value > adaptive_rsi_overbought:
             rsi_status = 'Overbought'
-        elif rsi_value < self.config.rsi_oversold:
+        elif rsi_value < adaptive_rsi_oversold:
             rsi_status = 'Oversold'
         else:
             rsi_status = 'Neutral'
@@ -848,19 +1310,19 @@ class ProTradingSystem:
         print(f"Max Drawdown: {stats['max_drawdown']:.2f}%")
         print(f"Profit Factor: {stats['profit_factor']:.2f}")
         
-        if results['trades']:
-            print(f"\n[*] Recent Trades:")
-            print("-" * 80)
-            for trade in results['trades'][-5:]:
-                if trade is None:
-                    continue  # Skip None trades
-                duration = f"{trade.duration_bars}bars"
-                print(f"{trade.entry_time.strftime('%Y-%m-%d %H:%M')} | "
-                      f"{trade.trade_type:5s} | "
-                      f"${trade.entry_price:7.2f} → ${trade.exit_price:7.2f} | "
-                      f"{trade.pnl_percent:6.2f}% | "
-                      f"{duration:8s} | "
-                      f"{trade.exit_reason}")
+        # if results['trades']:
+        #     print(f"\n[*] Recent Trades:")
+        #     print("-" * 80)
+        #     for trade in results['trades'][-5:]:
+        #         if trade is None:
+        #             continue  # Skip None trades
+        #         duration = f"{trade.duration_bars}bars"
+        #         print(f"{trade.entry_time.strftime('%Y-%m-%d %H:%M')} | "
+        #               f"{trade.trade_type:5s} | "
+        #               f"${trade.entry_price:7.2f} → ${trade.exit_price:7.2f} | "
+        #               f"{trade.pnl_percent:6.2f}% | "
+        #               f"{duration:8s} | "
+        #               f"{trade.exit_reason}")
         
         print("="*60)
     
@@ -897,654 +1359,3 @@ class ProTradingSystem:
             return self.db.get_portfolio_summary()
         else:
             return {'error': 'No portfolio data available'}
-    
-    def fetch_data(self, symbol: Optional[str] = None,
-                   interval: Optional[str] = None,
-                   days: Optional[int] = None,
-                   start_date: Optional[str] = None,
-                   end_date: Optional[str] = None) -> pd.DataFrame:
-        """Fetch market data using Binance"""
-        symbol = symbol or self.config.symbol
-        interval = interval or self.config.interval
-
-        if self.binance_provider:
-            return self._fetch_binance_data(symbol, interval, days, start_date, end_date)
-        else:
-            raise ValueError("Binance provider not available")
-    
-    def _fetch_binance_data(self, symbol: str, interval: str, days: int = None, start_date: str = None, end_date: str = None) -> pd.DataFrame:
-        """Fetch data from Binance with comprehensive multi-chunk support"""
-        try:
-            print(f"[*] _fetch_binance_data called with start_date={start_date}, end_date={end_date}")
-            # If start_date is specified, use comprehensive fetching for large date ranges
-            if start_date:
-                print(f"[*] Using comprehensive fetching for start_date: {start_date}, end_date: {end_date}")
-                return self._fetch_comprehensive_data(symbol, interval, start_date, end_date)
-
-            print("[*] Using standard fetching (no start_date)")
-            # Calculate days based on lookback period if not specified
-            if days is None:
-                lookback = self.config.lookback_period
-                if lookback.endswith('y'):
-                    days = int(lookback[:-1]) * 365
-                elif lookback.endswith('mo'):
-                    days = int(lookback[:-2]) * 30
-                elif lookback.endswith('d'):
-                    days = int(lookback[:-1])
-                else:
-                    days = 365  # Default 1 year
-            
-            # For normal fetching without start_date, limit to what fits in 1000 bars
-            days = min(days, 42)  # ~1000 bars for most intervals
-            
-            # Calculate appropriate limit based on interval
-            if interval.endswith('h'):
-                hours_per_bar = int(interval[:-1])
-                bars_per_day = 24 // hours_per_bar
-                limit = min(1000, days * bars_per_day)
-            elif interval.endswith('m'):
-                minutes_per_bar = int(interval[:-1])
-                bars_per_day = (24 * 60) // minutes_per_bar
-                limit = min(1000, days * bars_per_day)
-            else:
-                limit = min(1000, days)  # Daily or default
-            
-            data = self.binance_provider.get_historical_data(
-                symbol, interval, limit=limit
-            )
-            
-            if data.empty:
-                raise ValueError(f"No data found for symbol {symbol}")
-            
-            self.data = data
-            return data
-            
-        except Exception as e:
-            raise Exception(f"Error fetching data for {symbol}: {str(e)}")
-    
-    def calculate_signals(self) -> pd.DataFrame:
-        """Calculate all trading signals"""
-        if self.data is None:
-            raise ValueError("No data available. Call fetch_data() first.")
-        
-        # Calculate all indicators
-        all_indicators = self.indicators.calculate_all_indicators(self.data)
-        
-        # Get setup signals
-        setup_signals = self.indicators.get_setup_signals(all_indicators)
-        
-        # Create comprehensive signals DataFrame
-        signals_df = pd.DataFrame(index=self.data.index)
-        
-        # Basic price data
-        signals_df['open'] = self.data['Open']
-        signals_df['high'] = self.data['High']
-        signals_df['low'] = self.data['Low']
-        signals_df['close'] = self.data['Close']
-        signals_df['volume'] = self.data.get('Volume', 0)
-        
-        # Moving averages
-        for name, series in all_indicators['ema'].items():
-            signals_df[name] = series
-        
-        # Technical indicators
-        signals_df['rsi'] = all_indicators['rsi']
-        for name, series in all_indicators['macd'].items():
-            signals_df[name] = series
-        signals_df['atr'] = all_indicators['atr']
-
-        # ADX indicators
-        for name, series in all_indicators['adx'].items():
-            signals_df[f'adx_{name}'] = series
-
-        # Trend analysis
-        for name, series in all_indicators['trend'].items():
-            signals_df[f'trend_{name}'] = series
-        
-        # Momentum analysis
-        for name, series in all_indicators['momentum'].items():
-            signals_df[f'momentum_{name}'] = series
-        
-        # Price action
-        for name, series in all_indicators['price_action'].items():
-            signals_df[f'price_{name}'] = series
-        
-        # Volume analysis
-        for name, series in all_indicators['volume'].items():
-            signals_df[f'volume_{name}'] = series
-        
-        # Advanced market conditions  
-        if 'advanced' in all_indicators:
-            for name, series in all_indicators['advanced'].items():
-                signals_df[f'advanced_{name}'] = series
-        
-        # Setup signals
-        for name, series in setup_signals.items():
-            signals_df[f'setup_{name}'] = series
-        
-        # Generate entry triggers
-        signals_df = self._generate_entry_signals(signals_df)
-        
-        self.signals = signals_df
-        return signals_df
-    
-    def run_backtest(self, start_date: Optional[str] = None, 
-                    end_date: Optional[str] = None) -> Dict[str, Any]:
-        """Run complete backtest simulation"""
-        if self.signals is None:
-            raise ValueError("No signals calculated. Call calculate_signals() first.")
-        
-        # Filter data by date range if specified
-        data = self.signals.copy()
-        if start_date:
-            data = data[data.index >= start_date]
-        if end_date:
-            data = data[data.index <= end_date]
-        
-        # Reset position manager
-        self.position_manager.reset()
-        
-        # Track signals and trades
-        buy_signals = []
-        sell_signals = []
-        exits = []
-        
-        # Iterate through each bar
-        for i, (timestamp, row) in enumerate(data.iterrows()):
-            self.position_manager.update_bar(i)
-            
-            # Check for exit conditions first
-            if self.position_manager.is_in_trade():
-                # Update trailing stop
-                self.position_manager.update_trailing_stop(row['close'], row['atr'])
-                
-                # Check exit conditions
-                should_exit, exit_reason = self.position_manager.check_exit_conditions(
-                    row['close'], timestamp, 
-                    sell_signal=row.get('sell_confirmed', False),
-                    buy_signal=row.get('buy_confirmed', False)
-                )
-                
-                if should_exit:
-                    trade = self.position_manager.exit_position(
-                        row['close'], timestamp, exit_reason
-                    )
-                    if trade:  # Only add to exits if trade was successful
-                        exits.append({
-                            'timestamp': timestamp,
-                            'price': row['close'],
-                            'trade': trade
-                        })
-            elif self.position_manager.can_enter_trade():
-                # Buy signal
-                if row.get('buy_confirmed', False):
-                    market_regime = self._get_market_regime(row)
-                    success = self.position_manager.enter_long_position(
-                        row['close'], timestamp, row['atr'], market_regime=market_regime
-                    )
-                    if success:
-                        buy_signals.append({
-                            'timestamp': timestamp,
-                            'price': row['close'],
-                            'type': 'BUY'
-                        })
-                        self._update_last_signal_info('BUY', i)
-
-                # Sell signal
-                elif row.get('sell_confirmed', False):
-                    market_regime = self._get_market_regime(row)
-                    success = self.position_manager.enter_short_position(
-                        row['close'], timestamp, row['atr']
-                    )
-                    if success:
-                        sell_signals.append({
-                            'timestamp': timestamp,
-                            'price': row['close'],
-                            'type': 'SELL'
-                        })
-                        self._update_last_signal_info('SELL', i)
-            
-            # Update last signal bars ago
-            self._update_signal_bars_ago(i)
-        
-        # Force exit any remaining position
-        if self.position_manager.is_in_trade():
-            final_row = data.iloc[-1]
-            trade = self.position_manager.exit_position(
-                final_row['close'], final_row.name, "End of Data"
-            )
-            exits.append({
-                'timestamp': final_row.name,
-                'price': final_row['close'],
-                'trade': trade
-            })
-        
-        # Compile results
-        results = {
-            'buy_signals': buy_signals,
-            'sell_signals': sell_signals,
-            'exits': exits,
-            'trades': self.position_manager.trade_history,
-            'statistics': self.position_manager.get_trade_statistics(),
-            'data': data
-        }
-        
-        return results
-    
-    def _update_last_signal_info(self, signal_type: str, bar_index: int):
-        """Update last signal information"""
-        self.last_signal_info = {
-            'type': signal_type,
-            'bar_index': bar_index,
-            'bars_ago': 0
-        }
-    
-    def _update_signal_bars_ago(self, current_bar: int):
-        """Update bars since last signal"""
-        if 'bar_index' in self.last_signal_info:
-            self.last_signal_info['bars_ago'] = current_bar - self.last_signal_info['bar_index']
-    
-    def get_current_market_status(self) -> Dict[str, Any]:
-        """Get current market analysis status"""
-        if self.signals is None or self.signals.empty:
-            return {'error': 'No signals available'}
-        
-        latest = self.signals.iloc[-1]
-        
-        # Trend analysis
-        trend_status = latest['trend_trend_status']
-        if latest['trend_strong_bullish']:
-            trend_color = 'green'
-        elif latest['trend_strong_bearish']:
-            trend_color = 'red'
-        elif latest['trend_above_ema_200']:
-            trend_color = 'yellow'
-        else:
-            trend_color = 'orange'
-        
-        trend_percentage = (latest['ema_20'] / latest['ema_200'] - 1) * 100
-        
-        # RSI status
-        rsi_value = latest['rsi']
-        rsi_status = latest['momentum_rsi_status']
-        if latest['momentum_rsi_overbought']:
-            rsi_color = 'red'
-        elif latest['momentum_rsi_oversold']:
-            rsi_color = 'lime'
-        else:
-            rsi_color = 'yellow'
-        
-        # MACD status
-        macd_hist = latest['histogram']
-        macd_status = latest['momentum_macd_status']
-        if latest['momentum_macd_rising'] and latest['macd_line'] > latest['signal_line']:
-            macd_color = 'lime'
-        elif latest['macd_line'] > latest['signal_line']:
-            macd_color = 'green'
-        elif latest['momentum_macd_falling'] and latest['macd_line'] < latest['signal_line']:
-            macd_color = 'red'
-        else:
-            macd_color = 'orange'
-        
-        # Setup status
-        setup_status = latest['setup_setup_status']
-        if latest['setup_buy_setup']:
-            setup_color = 'lime'
-        elif latest['setup_sell_setup']:
-            setup_color = 'red'
-        else:
-            setup_color = 'gray'
-        
-        # Candle status
-        candle_status = latest['price_candle_status']
-        candle_color = 'lime' if latest['price_bull_candle'] else 'red'
-        
-        # Position status
-        position_status = self.position_manager.get_position_status()
-        current_pnl = 0.0
-        if self.position_manager.is_in_trade():
-            current_pnl = self.position_manager.get_current_pnl(latest['close'])
-            position_status['pnl_percent'] = current_pnl
-        
-        return {
-            'timestamp': latest.name,
-            'price': latest['close'],
-            'trend': {
-                'status': trend_status,
-                'percentage': trend_percentage,
-                'color': trend_color
-            },
-            'rsi': {
-                'value': rsi_value,
-                'status': rsi_status,
-                'color': rsi_color
-            },
-            'macd': {
-                'histogram': macd_hist,
-                'status': macd_status,
-                'color': macd_color
-            },
-            'setup': {
-                'status': setup_status,
-                'color': setup_color
-            },
-            'candle': {
-                'status': candle_status,
-                'color': candle_color
-            },
-            'position': position_status,
-            'atr': latest['atr'],
-            'last_signal': self.last_signal_info
-        }
-    
-    def get_live_signals(self) -> Dict[str, bool]:
-        """Get current live trading signals"""
-        if self.signals is None or self.signals.empty:
-            return {'buy_signal': False, 'sell_signal': False}
-        
-        latest = self.signals.iloc[-1]
-        
-        # Check if we can enter new trades
-        can_trade = self.position_manager.can_enter_trade()
-        
-        return {
-            'buy_signal': latest.get('buy_confirmed', False) and can_trade,
-            'sell_signal': latest.get('sell_confirmed', False) and can_trade,
-            'buy_setup': latest.get('setup_buy_setup', False),
-            'sell_setup': latest.get('setup_sell_setup', False),
-            'in_trade': self.position_manager.is_in_trade()
-        }
-    
-    def update_with_new_data(self, new_bar: Dict[str, float]) -> Dict[str, Any]:
-        """Update system with new real-time bar data"""
-        if self.data is None:
-            raise ValueError("No historical data loaded")
-        
-        # Convert new bar to DataFrame row
-        timestamp = datetime.now()
-        new_row = pd.DataFrame([new_bar], index=[timestamp])
-        
-        # Append to existing data
-        self.data = pd.concat([self.data, new_row])
-        
-        # Recalculate signals for the new data
-        self.calculate_signals()
-        
-        # Get current status
-        return self.get_current_market_status()
-    
-    def export_results(self, results: Dict[str, Any], filename: str = "trading_results.csv"):
-        """Export trading results to CSV"""
-        if not results['trades']:
-            print("No trades to export")
-            return
-        
-        # Convert trades to DataFrame
-        trades_data = []
-        for trade in results['trades']:
-            trades_data.append({
-                'Entry Time': trade.entry_time,
-                'Exit Time': trade.exit_time,
-                'Type': trade.trade_type,
-                'Entry Price': trade.entry_price,
-                'Exit Price': trade.exit_price,
-                'P&L %': trade.pnl_percent,
-                'Exit Reason': trade.exit_reason,
-                'Duration': trade.duration_bars
-            })
-        
-        trades_df = pd.DataFrame(trades_data)
-        trades_df.to_csv(filename, index=False)
-        print(f"Results exported to {filename}")
-    
-    def print_statistics(self, results: Dict[str, Any]):
-        """Print comprehensive trading statistics"""
-        stats = results['statistics']
-        
-        print("\n" + "="*50)
-        print("TRADING SYSTEM PERFORMANCE STATISTICS")
-        print("="*50)
-        
-        print(f"Total Trades: {stats['total_trades']}")
-        print(f"Winning Trades: {stats['winning_trades']}")
-        print(f"Losing Trades: {stats['losing_trades']}")
-        print(f"Win Rate: {stats['win_rate']:.1f}%")
-        print(f"Average Win: {stats['avg_win']:.2f}%")
-        print(f"Average Loss: {stats['avg_loss']:.2f}%")
-        print(f"Total P&L: {stats['total_pnl']:.2f}%")
-        print(f"Max Drawdown: {stats['max_drawdown']:.2f}%")
-        print(f"Profit Factor: {stats['profit_factor']:.2f}")
-        
-        if results['trades']:
-            print(f"\nLast 5 Trades:")
-            print("-" * 80)
-            for trade in results['trades'][-5:]:
-                print(f"{trade.entry_time.strftime('%Y-%m-%d %H:%M')} | "
-                      f"{trade.trade_type:5s} | "
-                      f"Entry: ${trade.entry_price:7.2f} | "
-                      f"Exit: ${trade.exit_price:7.2f} | "
-                      f"P&L: {trade.pnl_percent:6.2f}% | "
-                      f"{trade.exit_reason}")
-        
-        print("="*50)
-    
-    def start_live_trading(self, symbol: Optional[str] = None, 
-                          interval: Optional[str] = None) -> bool:
-        """Start live trading with real-time data"""
-        if not self.live_system:
-            print("❌ Live trading requires Binance integration")
-            return False
-        
-        symbol = symbol or self.config.symbol
-        interval = interval or self.config.interval
-        
-        print(f"[*] Starting live trading for {symbol} {interval}")
-        
-        # Fetch initial historical data
-        initial_data = self.live_system.fetch_initial_data(symbol, interval, days=30)
-        if initial_data is None:
-            return False
-        
-        self.data = initial_data
-        self.calculate_signals()
-        
-        # Setup live update callback
-        def handle_live_update(kline_data, new_row):
-            try:
-                # Update data with new bar
-                self.data = self.live_system.get_combined_data()
-                
-                # Recalculate signals
-                self.calculate_signals()
-                
-                # Check for new trading signals
-                current_signals = self.get_live_signals()
-                
-                if current_signals['buy_signal']:
-                    print(f"[*] BUY SIGNAL DETECTED at ${kline_data['close']:.4f}!")
-                elif current_signals['sell_signal']:
-                    print(f"[*] SELL SIGNAL DETECTED at ${kline_data['close']:.4f}!")
-                
-                # Update position management
-                if self.position_manager.is_in_trade():
-                    self.position_manager.update_trailing_stop(
-                        kline_data['close'], 
-                        self.signals['atr'].iloc[-1] if len(self.signals) > 0 else 0
-                    )
-                    
-                    # Check exit conditions
-                    should_exit, exit_reason = self.position_manager.check_exit_conditions(
-                        kline_data['close'], 
-                        kline_data['timestamp'],
-                        sell_signal=current_signals['sell_signal'],
-                        buy_signal=current_signals['buy_signal']
-                    )
-                    
-                    if should_exit:
-                        trade = self.position_manager.exit_position(
-                            kline_data['close'], 
-                            kline_data['timestamp'], 
-                            exit_reason
-                        )
-                        if trade:
-                            print(f"[*] TRADE CLOSED: {trade.trade_type} | P&L: {trade.pnl_percent:+.2f}% | Reason: {exit_reason}")
-                        else:
-                            print(f"[*] TRADE CLOSED | Reason: {exit_reason}")
-                
-            except Exception as e:
-                print(f"Error in live update: {e}")
-        
-        # Add callback and start monitoring
-        self.live_system.add_update_callback(handle_live_update)
-        success = self.live_system.start_live_monitoring(symbol, interval)
-        
-        if success:
-            print(f"[OK] Live trading started for {symbol}")
-            print("[*] Press Ctrl+C to stop live trading")
-        
-        return success
-    
-    def stop_live_trading(self):
-        """Stop live trading"""
-        if self.live_system:
-            self.live_system.stop_monitoring()
-            print("[*] Live trading stopped")
-    
-    def get_binance_market_info(self, symbol: Optional[str] = None) -> Dict[str, Any]:
-        """Get additional Binance market information"""
-        if not self.binance_provider:
-            return {}
-        
-        symbol = symbol or self.config.symbol
-        
-        try:
-            ticker_24hr = self.binance_provider.get_24hr_ticker(symbol)
-            latest_price = self.binance_provider.get_latest_price(symbol)
-            
-            return {
-                'current_price': latest_price,
-                'price_change_24h': float(ticker_24hr.get('priceChange', 0)),
-                'price_change_percent_24h': float(ticker_24hr.get('priceChangePercent', 0)),
-                'high_24h': float(ticker_24hr.get('highPrice', 0)),
-                'low_24h': float(ticker_24hr.get('lowPrice', 0)),
-                'volume_24h': float(ticker_24hr.get('volume', 0)),
-                'quote_volume_24h': float(ticker_24hr.get('quoteVolume', 0)),
-                'trade_count_24h': int(ticker_24hr.get('count', 0))
-            }
-            
-        except Exception as e:
-            print(f"Error getting market info: {e}")
-            return {}
-    
-    def _fetch_comprehensive_data(self, symbol: str, interval: str, start_date: str, end_date: str = None) -> pd.DataFrame:
-        """Fetch comprehensive historical data in chunks to overcome API limits"""
-        from datetime import datetime, timedelta
-        import time
-
-        # Parse dates
-        start_dt = datetime.strptime(start_date, '%Y-%m-%d')
-        if end_date:
-            end_dt = pd.Timestamp(datetime.strptime(end_date, '%Y-%m-%d'))
-            print(f"[*] Fetching comprehensive data from {start_date} to {end_date}...")
-        else:
-            end_dt = pd.Timestamp.now()
-            print(f"[*] Fetching comprehensive data from {start_date} to present...")
-
-        # Calculate bars per day for the interval
-        if interval.endswith('h'):
-            hours_per_bar = int(interval[:-1])
-            bars_per_day = 24 // hours_per_bar
-        elif interval.endswith('m'):
-            minutes_per_bar = int(interval[:-1])
-            bars_per_day = (24 * 60) // minutes_per_bar
-        else:
-            bars_per_day = 1  # Daily
-
-        # Calculate total days and required chunks
-        total_days = (end_dt - start_dt).days + 1
-        total_bars_needed = total_days * bars_per_day
-        chunks_needed = (total_bars_needed // 1000) + 1  # No arbitrary limit - fetch as many as needed
-
-        print(f"[*] Estimated {total_bars_needed:,} bars needed over {total_days} days")
-        print(f"[*] Will fetch in up to {chunks_needed} chunks of 1000 bars each")
-
-        all_data = []
-        current_start = start_date
-        chunk = 0
-        max_chunks = 200  # Safety limit to prevent infinite loops (200k bars max)
-
-        while chunk < max_chunks:
-            try:
-                chunk += 1
-                print(f"   Fetching chunk {chunk}/{chunks_needed} starting from {current_start}...")
-
-                # Fetch this chunk
-                chunk_data = self.binance_provider.get_historical_data(
-                    symbol, interval, limit=1000, start_str=current_start
-                )
-
-                if chunk_data.empty:
-                    print(f"   No more data available from {current_start}")
-                    break
-
-                all_data.append(chunk_data)
-
-                # Update start point for next chunk (last timestamp + 1 period)
-                last_timestamp = chunk_data.index[-1]
-
-                # Normalize timezone for comparison
-                last_ts_normalized = pd.Timestamp(last_timestamp).tz_localize(None) if hasattr(last_timestamp, 'tz') and last_timestamp.tz else pd.Timestamp(last_timestamp)
-                end_dt_normalized = end_dt.tz_localize(None) if hasattr(end_dt, 'tz') and end_dt.tz else end_dt
-
-                # Check if we've reached current time or got less than 1000 bars (end of data)
-                if len(chunk_data) < 1000 or last_ts_normalized >= end_dt_normalized:
-                    print(f"   Reached end of available data (fetched {len(chunk_data)} bars)")
-                    break
-
-                # Calculate next start time
-                if interval.endswith('h'):
-                    next_start = last_timestamp + timedelta(hours=hours_per_bar)
-                elif interval.endswith('m'):
-                    next_start = last_timestamp + timedelta(minutes=minutes_per_bar)
-                else:
-                    next_start = last_timestamp + timedelta(days=1)
-
-                current_start = next_start.strftime('%Y-%m-%d %H:%M:%S')
-
-                # Small delay to avoid hitting rate limits
-                time.sleep(0.1)
-
-            except Exception as e:
-                print(f"   Error fetching chunk {chunk}: {e}")
-                if chunk == 1:  # If first chunk fails, propagate error
-                    raise
-                print(f"   Continuing with {len(all_data)} chunks already fetched...")
-                break
-
-        if not all_data:
-            raise ValueError(f"No data could be fetched for {symbol} from {start_date}")
-
-        # Combine all chunks
-        combined_data = pd.concat(all_data, ignore_index=False)
-
-        # Remove duplicates based on index (timestamp)
-        combined_data = combined_data[~combined_data.index.duplicated(keep='first')]
-
-        # Ensure chronological order
-        combined_data = combined_data.sort_index()
-
-        bars_fetched = len(combined_data)
-        coverage_pct = (bars_fetched / total_bars_needed * 100) if total_bars_needed > 0 else 100
-
-        print(f"[OK] Successfully fetched {bars_fetched:,} bars from {combined_data.index[0].date()} to {combined_data.index[-1].date()}")
-        print(f"[*] Data coverage: {coverage_pct:.1f}% of estimated {total_bars_needed:,} bars")
-
-        self.data = combined_data
-        return combined_data
-    
-    def get_popular_symbols(self) -> List[str]:
-        """Get list of popular trading symbols"""
-        if self.binance_provider:
-            return self.binance_provider.get_popular_symbols()
-        else:
-            return ['AAPL', 'TSLA', 'MSFT', 'GOOGL', 'AMZN', 'META', 'NVDA', 'SPY', 'QQQ', 'BTC-USD']

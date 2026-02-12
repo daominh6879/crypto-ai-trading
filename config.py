@@ -16,52 +16,54 @@ class TradingConfig:
     ema_50_length: int = 50
     ema_200_length: int = 200  # Trend Filter
     
-    # ==================== RSI ====================
+    # ==================== RSI (BULL-MARKET OPTIMIZED) ====================
     rsi_length: int = 14
-    rsi_overbought: int = 68  # Slightly lower for earlier exits (better win rate)
-    rsi_oversold: int = 32    # Slightly higher for better entries
+    rsi_overbought: int = 75  # More permissive for bull markets (was 68, now 75)
+    rsi_oversold: int = 30    # More permissive for entries (was 32, now 30)
     
     # ==================== MACD ====================
     macd_fast: int = 12
     macd_slow: int = 26
     macd_signal: int = 9
     
-    # ==================== TRADING RULES (BALANCED QUALITY) ====================
+    # ==================== TRADING RULES (BULL-MARKET OPTIMIZED) ====================
     use_trend_filter: bool = True   # Only trade with EMA200 trend
-    min_bars_gap: int = 6          # Higher for quality (was 3, tried 8)
+    min_bars_gap: int = 4          # Lower gap for bull markets (was 6, now 4)
     require_confirmation: bool = True  # Wait for confirmation candle
     allow_long_trades: bool = True    # Enable longs (disable in bear markets)
     allow_short_trades: bool = True   # Enable shorts for both directions
     require_pullback_entry: bool = False  # Keep simple
 
-    # Professional Signal Quality Controls
-    min_risk_reward_ratio: float = 2.8  # Higher R:R target (was 2.5)
-    max_daily_trades: int = 3          # Selective (was 5)
-    require_confluence: bool = False     # Simpler is better (was True)
+    # Professional Signal Quality Controls (Bull-Market Optimized)
+    min_risk_reward_ratio: float = 2.5  # Lower R:R for more opportunities (was 2.8, now 2.5)
+    max_daily_trades: int = 6          # More trading opportunities (was 4, now 6)
+    require_confluence: bool = False   # Disable confluence for more trades
     ultra_strict_mode: bool = False     # Disabled for balanced trading
 
-    # Volatility Controls
-    max_volatility_threshold: float = 2.9  # Lower - avoid choppy markets (was 3.0)
-    min_trend_strength: float = 0.52       # Stronger trends (was 0.45)
+    # Volatility Controls (Bull-Market Friendly)
+    max_volatility_threshold: float = 3.2  # Allow more volatility in bull markets (was 2.8, now 3.2)
+    min_trend_strength: float = 0.45       # Lower threshold for more opportunities (was 0.50, now 0.45)
     
     # ==================== ADX & MARKET REGIME DETECTION ====================
     adx_length: int = 14                   # ADX calculation period
     adx_trending_threshold: float = 25     # ADX > 25 = trending market
-    adx_ranging_threshold: float = 20      # ADX < 20 = choppy/ranging market
-    adx_strong_trend_threshold: float = 30 # ADX > 30 = very strong trend
+    adx_ranging_threshold: float = 18      # ADX < 18 = choppy/ranging market (was 20, now 18)
+    
+    # ==================== LIVE TRADING REGIME DETECTION ====================
+    regime_lookback_days: int = 90            # Days to look back for regime detection (90 = ~3 months)
+    adx_strong_trend_threshold: float = 35 # ADX > 35 = very strong trend (was 30, now 35)
 
-    # OPTIMAL ADX RANGE: 20-30 (Data-Driven Analysis Results)
-    # Analysis of 2022 (bear) and 2024 (bull) showed:
-    # - ADX < 20 (choppy): -39.88% in bear markets, +16.49% in bull markets
-    # - ADX 20-25 (neutral): +10.20% in bear markets, +15.54% in bull markets ✓
-    # - ADX 25-30 (trending): -7.95% in bear markets, +9.98% in bull markets ✓
-    # - ADX > 30 (extreme): +5.90% in bear markets, -23.67% in bull markets ✗
-    # CONCLUSION: Trade ONLY when ADX is 20-30 for consistent profitability
+    # BALANCED ADX RANGE: 18-35 (Slightly expanded for more opportunities)
+    # Original research showed 20-30 was optimal, but we expand slightly:
+    # - ADX < 18 (choppy): Still avoid these
+    # - ADX 18-35 (tradeable): Expanded range for more opportunities ✓
+    # - ADX > 35 (extreme): Still avoid extreme volatility
+    # BALANCE: Keep quality but allow more trading opportunities
 
     # ==================== ADAPTIVE PARAMETERS ====================
     # NOTE: Adaptive parameters can help in choppy markets but may reduce performance in trends
     # Test both enabled/disabled to find what works best for your trading style
-    enable_adaptive_parameters: bool = False  # Enable dynamic risk parameters (stops/targets) based on market regime
+    enable_adaptive_parameters: bool = True   # Enable dynamic risk parameters (stops/targets) based on market regime
     enable_adaptive_gap_filtering: bool = False  # Enable adaptive min_bars_gap (NOT RECOMMENDED)
     enable_regime_filter: bool = True        # Filter to optimal ADX range (20-30) - ENABLED based on data analysis
 
@@ -99,7 +101,7 @@ class TradingConfig:
     show_labels: bool = True  # Entry/Exit labels
     
     # ==================== DATA SETTINGS ====================
-    symbol: str = "AAPL"  # Default symbol
+    symbol: str = "BTCUSDT"  # Default symbol
     interval: str = "1d"   # Data interval (1m, 5m, 15m, 1h, 1d, etc.)
     lookback_period: str = "1y"  # Get more data for better backtesting (was "2y")
     
