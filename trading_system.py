@@ -341,12 +341,14 @@ class ProTradingSystem:
             'strategy': 'Balanced Trend Following', 'risk_level': 'Medium-High'
         }
         
-        # CONSERVATIVE BEAR STRATEGY - Capital preservation with active bounce trading
+        # CONSERVATIVE BEAR STRATEGY - Severe capital preservation for harsh bear markets like 2018
         bear_config = {
-            'rsi_oversold': 30, 'rsi_overbought': 65,   # Moderate (was 25/65)
-            'adx_min': 20, 'adx_max': 40, 'min_bars_gap': 8,  # Reasonable gap
-            'max_daily_trades': 3, 'enable_shorts': True,  # Allow shorts in bear
-            'strategy': 'Conservative Active Trading', 'risk_level': 'Low'
+            'rsi_oversold': 25, 'rsi_overbought': 60,   # Much tighter range (was 30/65)
+            'adx_min': 25, 'adx_max': 35, 'min_bars_gap': 12,  # Higher gap (was 8, now 12)
+            'max_daily_trades': 1, 'enable_shorts': True,  # Only 1 trade per day (was 3)
+            'strategy': 'Conservative Active Trading', 'risk_level': 'Low',
+            'strict_trend_confirmation': True,  # Require strong trend confirmation
+            'enhanced_volatility_filter': True  # Extra volatility filtering
         }
         
         # MODERATE VOLATILE STRATEGY - Handle chop without overexposure
@@ -654,39 +656,43 @@ class ProTradingSystem:
                     volume_sell_condition
                 )
             
-            # STRATEGY 2: BEAR MARKET - Conservative Active Trading
+            # STRATEGY 2: BEAR MARKET - Ultra Conservative Trading (2018 Optimized)
             elif regime == 'bear':
-                # Moderate bear market filters - only avoid catastrophic conditions
+                # Enhanced bear market protection - avoid most volatile conditions
                 extreme_conditions = (
-                    (signals_df['close'].pct_change(5) < -0.15) |  # 15%+ crash in 5 bars
-                    (abs(signals_df['close'].pct_change()) > 0.10)  # 10%+ single bar move
+                    (signals_df['close'].pct_change(5) < -0.10) |  # 10%+ crash in 5 bars (was 15%)
+                    (abs(signals_df['close'].pct_change()) > 0.07) |  # 7%+ single bar move (was 10%)
+                    (signals_df['rsi'].rolling(3).std() > 8)  # High RSI volatility
+                )
+                
+                # Additional market stress indicators
+                market_stress = (
+                    (signals_df['close'] < signals_df.get('ema_200', signals_df['close'] * 1.05)) &  # Below 200 EMA
+                    (signals_df['adx_adx'] > 35)  # High volatility ADX
                 )
 
-                # Bear market buy: oversold bounces and reversals
+                # ULTRA conservative bear market buy: only strongest setups
                 buy_trigger = (
                     ~extreme_conditions &
+                    ~market_stress &
                     (
-                        # Option A: Oversold bounce with strength confirmation
-                        (
-                            (signals_df['close'] > signals_df.get('ema_20', signals_df['close'] * 0.99)) &
-                            (signals_df['rsi'] > 25) & (signals_df['rsi'] < 45) &
-                            (macd_bullish | (signals_df['rsi'] > signals_df['rsi'].shift(1)))
-                        ) |
-                        # Option B: Strong reversal with full EMA alignment
-                        (
-                            basic_buy_condition &
-                            (signals_df['rsi'] > 30) & (signals_df['rsi'] < 60) &
-                            macd_bullish
-                        )
+                        # Only Option: Very strong reversal with multiple confirmations
+                        basic_buy_condition &
+                        (signals_df['rsi'] > 25) & (signals_df['rsi'] < 45) &  # Tight RSI range
+                        (signals_df['close'] > signals_df.get('ema_20', signals_df['close'] * 0.99)) &  # Above 20 EMA
+                        macd_bullish &
+                        (signals_df['rsi'] > signals_df['rsi'].shift(2))  # RSI rising for 2+ bars
                     )
                 )
 
-                # Allow selective shorts in bear markets
+                # More selective shorts in bear markets
                 sell_trigger = (
+                    ~extreme_conditions &
                     (signals_df['close'] < signals_df.get('ema_20', signals_df['close'] * 1.01)) &
-                    (signals_df['rsi'] > 55) &
+                    (signals_df['rsi'] > 60) &  # Higher threshold (was 55)
                     macd_bearish &
-                    volume_sell_condition
+                    volume_sell_condition &
+                    (signals_df['adx_adx'] > 20)  # Require trending market
                 )
             
             # STRATEGY 3: VOLATILE MARKET - Ultra Selective Swing Trading
@@ -802,10 +808,10 @@ class ProTradingSystem:
         buy_final = buy_signal.copy()
         sell_final = sell_signal.copy()
 
-        # Dynamic gap based on market regime - more conservative in volatile/bear markets
+        # Dynamic gap based on market regime - much more conservative in bear markets (2018 optimized)
         current_regime = getattr(self, 'current_regime', 'sideways')
         if current_regime == 'bear':
-            min_gap = max(self.config.min_bars_gap, 8)  # Minimum 8 bars in bear markets
+            min_gap = max(self.config.min_bars_gap, 15)  # Minimum 15 bars in bear markets (was 8)
         elif current_regime == 'volatile':
             min_gap = max(self.config.min_bars_gap, 12)  # Minimum 12 bars in volatile markets
         elif current_regime == 'bull':
