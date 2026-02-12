@@ -64,6 +64,11 @@ class TradingConfig:
     enable_adaptive_parameters: bool = False  # Enable dynamic risk parameters (stops/targets) based on market regime
     enable_adaptive_gap_filtering: bool = False  # Enable adaptive min_bars_gap (NOT RECOMMENDED)
     enable_regime_filter: bool = True        # Filter to optimal ADX range (20-30) - ENABLED based on data analysis
+    
+    # ==================== RESEARCH MODE ====================
+    # Simplified signals matching the research baseline that achieved -12.66% in 2022
+    enable_research_mode: bool = True        # Use simplified signal logic from research analysis
+    research_simple_signals: bool = True     # Use basic Pine Script conditions + ADX filter only
 
     # ==================== RISK MANAGEMENT (SWING TRADING - BASE VALUES) ====================
     atr_length: int = 14

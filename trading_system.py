@@ -297,8 +297,31 @@ class ProTradingSystem:
 
         # QUALITY-FOCUSED ENTRY LOGIC - Fewer, better trades
 
-        # Enhanced BUY criteria - Very selective
-        if self.config.enable_regime_filter:
+        # Research-based BUY criteria
+        if getattr(self.config, 'enable_research_mode', False) and getattr(self.config, 'research_simple_signals', False):
+            # SIMPLIFIED RESEARCH MODE: Basic Pine Script conditions + ADX 20-30 filter
+            # Matches the baseline used in research analysis that improved from -31.73% to -12.66%
+            original_buy_trigger = (
+                # Basic Pine Script Buy Setup: EMA alignment
+                signals_df['setup_buy_setup'] &  # (ema_20 > ema_50) & (ema_50 > ema_200)
+                
+                # Simple RSI conditions
+                (signals_df['rsi'] > 45) &  # RSI above midline
+                (signals_df['rsi'] < 75) &  # Not extremely overbought
+                
+                # Simple MACD conditions 
+                (signals_df['macd_line'] > signals_df['signal_line']) &  # MACD bullish
+                (signals_df['histogram'] > 0) &  # Histogram positive
+                
+                # Basic trend confirmation
+                (signals_df['close'] > signals_df['ema_20']) &  # Price above EMA20
+                
+                # OPTIMAL ADX FILTER (20-30 range - THE KEY RESEARCH FINDING)
+                ~signals_df['advanced_adx_choppy'] &  # ADX > 20 (not choppy)
+                ~signals_df['advanced_adx_strong_trending']  # ADX < 30 (not extreme)
+            )
+        elif self.config.enable_regime_filter:
+            # Enhanced BUY criteria - Very selective
             # Apply optimal ADX filter (20-30 range)
             original_buy_trigger = (
                 # RSI Criteria - Strong momentum
@@ -359,8 +382,30 @@ class ProTradingSystem:
                 ~signals_df['advanced_high_volatility']  # Avoid high volatility
             )
 
-        # Enhanced SELL criteria - Very selective
-        if self.config.enable_regime_filter:
+        # Research-based SELL criteria
+        if getattr(self.config, 'enable_research_mode', False) and getattr(self.config, 'research_simple_signals', False):
+            # SIMPLIFIED RESEARCH MODE: Basic Pine Script conditions + ADX 20-30 filter
+            original_sell_trigger = (
+                # Basic Pine Script Sell Setup: EMA alignment  
+                signals_df['setup_sell_setup'] &  # (ema_20 < ema_50) & (ema_50 < ema_200)
+                
+                # Simple RSI conditions
+                (signals_df['rsi'] < 55) &  # RSI below midline  
+                (signals_df['rsi'] > 25) &  # Not extremely oversold
+                
+                # Simple MACD conditions
+                (signals_df['macd_line'] < signals_df['signal_line']) &  # MACD bearish
+                (signals_df['histogram'] < 0) &  # Histogram negative
+                
+                # Basic trend confirmation
+                (signals_df['close'] < signals_df['ema_20']) &  # Price below EMA20
+                
+                # OPTIMAL ADX FILTER (20-30 range - THE KEY RESEARCH FINDING)
+                ~signals_df['advanced_adx_choppy'] &  # ADX > 20 (not choppy)
+                ~signals_df['advanced_adx_strong_trending']  # ADX < 30 (not extreme)
+            )
+        elif self.config.enable_regime_filter:
+            # Enhanced SELL criteria - Very selective
             # Apply optimal ADX filter (20-30 range)
             original_sell_trigger = (
                 # RSI Criteria
