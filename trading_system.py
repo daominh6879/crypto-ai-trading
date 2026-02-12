@@ -421,6 +421,11 @@ class ProTradingSystem:
                 ~signals_df['advanced_high_volatility']
             )
         
+        # Disable long trades if configured (for bear markets)
+        if not getattr(self.config, 'allow_long_trades', True):
+            original_buy_trigger[:] = False  # Disable all buy signals
+            professional_buy_trigger[:] = False
+
         # Disable short trades if configured
         if not getattr(self.config, 'allow_short_trades', True):
             original_sell_trigger[:] = False  # Disable all sell signals

@@ -30,6 +30,7 @@ class TradingConfig:
     use_trend_filter: bool = True   # Only trade with EMA200 trend
     min_bars_gap: int = 6          # Higher for quality (was 3, tried 8)
     require_confirmation: bool = True  # Wait for confirmation candle
+    allow_long_trades: bool = True    # Enable longs (disable in bear markets)
     allow_short_trades: bool = True   # Enable shorts for both directions
     require_pullback_entry: bool = False  # Keep simple
 
