@@ -3,7 +3,12 @@
     "allow": [
       "Bash(python main.py:*)",
       "Bash(ls:*)",
-      "Bash(chcp 65001)"
+      "Bash(chcp 65001)",
+      "Bash(pip install:*)",
+      "Bash(python:*)",
+      "Bash(.venv/Scripts/python.exe -m pip install:*)",
+      "Bash(timeout 3 tail:*)",
+      "Bash(tee:*)"
     ]
   }
 }

@@ -55,29 +55,30 @@ class ProTradingSystem:
             self.binance_provider = None
             self.live_system = None
     
-    def fetch_data(self, symbol: Optional[str] = None, 
+    def fetch_data(self, symbol: Optional[str] = None,
                    interval: Optional[str] = None,
                    days: Optional[int] = None,
-                   start_date: Optional[str] = None) -> pd.DataFrame:
+                   start_date: Optional[str] = None,
+                   end_date: Optional[str] = None) -> pd.DataFrame:
         """Fetch market data using Binance"""
         symbol = symbol or self.config.symbol
         interval = interval or self.config.interval
-        
+
         if self.binance_provider:
-            return self._fetch_binance_data(symbol, interval, days, start_date)
+            return self._fetch_binance_data(symbol, interval, days, start_date, end_date)
         else:
             raise ValueError("Binance provider not available")
     
-    def _fetch_binance_data(self, symbol: str, interval: str, days: int = None, start_date: str = None) -> pd.DataFrame:
+    def _fetch_binance_data(self, symbol: str, interval: str, days: int = None, start_date: str = None, end_date: str = None) -> pd.DataFrame:
         """Fetch data from Binance with comprehensive multi-chunk support"""
         try:
-            print(f"🔍 _fetch_binance_data called with start_date={start_date}")
+            print(f"[*] _fetch_binance_data called with start_date={start_date}, end_date={end_date}")
             # If start_date is specified, use comprehensive fetching for large date ranges
             if start_date:
-                print(f"🔄 Using comprehensive fetching for start_date: {start_date}")
-                return self._fetch_comprehensive_data(symbol, interval, start_date)
-            
-            print("📊 Using standard fetching (no start_date)")
+                print(f"[*] Using comprehensive fetching for start_date: {start_date}, end_date: {end_date}")
+                return self._fetch_comprehensive_data(symbol, interval, start_date, end_date)
+
+            print("[*] Using standard fetching (no start_date)")
             # Calculate days based on lookback period if not specified
             if days is None:
                 lookback = self.config.lookback_period
@@ -148,7 +149,11 @@ class ProTradingSystem:
         for name, series in all_indicators['macd'].items():
             signals_df[name] = series
         signals_df['atr'] = all_indicators['atr']
-        
+
+        # ADX indicators
+        for name, series in all_indicators['adx'].items():
+            signals_df[f'adx_{name}'] = series
+
         # Trend analysis
         for name, series in all_indicators['trend'].items():
             signals_df[f'trend_{name}'] = series
@@ -202,12 +207,26 @@ class ProTradingSystem:
         )
         
         # 4. Market Condition Filters
-        market_conditions_buy = (
-            signals_df['advanced_trending_market'] &  # Only trade in trending markets
-            signals_df['advanced_strong_bull_trend'] &  # Strong bullish trend
-            signals_df['advanced_price_momentum_bull'] &  # Price momentum
-            ~signals_df['advanced_high_volatility']  # Avoid high volatility periods
-        )
+        # Enhanced with ADX-based regime filtering
+        if self.config.enable_regime_filter:
+            # OPTIMAL ADX RANGE: 20-30 (based on backtest analysis)
+            # Filter out: ADX < 20 (choppy) AND ADX > 30 (extreme volatility)
+            market_conditions_buy = (
+                ~signals_df['advanced_adx_choppy'] &  # Not choppy (ADX > 20)
+                ~signals_df['advanced_adx_strong_trending'] &  # Not extreme (ADX < 30)
+                signals_df['advanced_trending_market'] &  # Price action confirms trend
+                signals_df['advanced_strong_bull_trend'] &  # Strong bullish trend
+                signals_df['advanced_price_momentum_bull'] &  # Price momentum
+                ~signals_df['advanced_high_volatility']  # Avoid high volatility periods
+            )
+        else:
+            # Original filtering without regime filter
+            market_conditions_buy = (
+                signals_df['advanced_trending_market'] &  # Only trade in trending markets
+                signals_df['advanced_strong_bull_trend'] &  # Strong bullish trend
+                signals_df['advanced_price_momentum_bull'] &  # Price momentum
+                ~signals_df['advanced_high_volatility']  # Avoid high volatility periods
+            )
         
         # 5. Volume Confirmation
         volume_buy = signals_df['volume_vol_bull']
@@ -240,12 +259,26 @@ class ProTradingSystem:
         )
         
         # 4. Market Condition Filters
-        market_conditions_sell = (
-            signals_df['advanced_trending_market'] &  # Only trade in trending markets
-            signals_df['advanced_strong_bear_trend'] &  # Strong bearish trend
-            signals_df['advanced_price_momentum_bear'] &  # Price momentum
-            ~signals_df['advanced_high_volatility']  # Avoid high volatility periods
-        )
+        # Enhanced with ADX-based regime filtering
+        if self.config.enable_regime_filter:
+            # OPTIMAL ADX RANGE: 20-30 (based on backtest analysis)
+            # Filter out: ADX < 20 (choppy) AND ADX > 30 (extreme volatility)
+            market_conditions_sell = (
+                ~signals_df['advanced_adx_choppy'] &  # Not choppy (ADX > 20)
+                ~signals_df['advanced_adx_strong_trending'] &  # Not extreme (ADX < 30)
+                signals_df['advanced_trending_market'] &  # Price action confirms trend
+                signals_df['advanced_strong_bear_trend'] &  # Strong bearish trend
+                signals_df['advanced_price_momentum_bear'] &  # Price momentum
+                ~signals_df['advanced_high_volatility']  # Avoid high volatility periods
+            )
+        else:
+            # Original filtering without regime filter
+            market_conditions_sell = (
+                signals_df['advanced_trending_market'] &  # Only trade in trending markets
+                signals_df['advanced_strong_bear_trend'] &  # Strong bearish trend
+                signals_df['advanced_price_momentum_bear'] &  # Price momentum
+                ~signals_df['advanced_high_volatility']  # Avoid high volatility periods
+            )
         
         # 5. Volume Confirmation
         volume_sell = signals_df['volume_vol_bear']
@@ -265,60 +298,128 @@ class ProTradingSystem:
         # QUALITY-FOCUSED ENTRY LOGIC - Fewer, better trades
 
         # Enhanced BUY criteria - Very selective
-        original_buy_trigger = (
-            # RSI Criteria - Strong momentum
-            (signals_df['rsi'] > 56) &  # Stronger than before (was 54)
-            (signals_df['rsi'] < 70) &  # Not overbought
-            (signals_df['rsi'] > signals_df['rsi'].shift(1)) &  # RSI rising
-            (signals_df['rsi'] > signals_df['rsi'].shift(3)) &  # Sustained rise
+        if self.config.enable_regime_filter:
+            # Apply optimal ADX filter (20-30 range)
+            original_buy_trigger = (
+                # RSI Criteria - Strong momentum
+                (signals_df['rsi'] > 56) &  # Stronger than before (was 54)
+                (signals_df['rsi'] < 70) &  # Not overbought
+                (signals_df['rsi'] > signals_df['rsi'].shift(1)) &  # RSI rising
+                (signals_df['rsi'] > signals_df['rsi'].shift(3)) &  # Sustained rise
 
-            # MACD Criteria - Strong bullish
-            (signals_df['macd_line'] > signals_df['signal_line']) &
-            (signals_df['histogram'] > 0) &
-            (signals_df['histogram'] > signals_df['histogram'].shift(1)) &  # Accelerating
-            (signals_df['macd_line'] > signals_df['macd_line'].shift(2)) &  # MACD trending up
+                # MACD Criteria - Strong bullish
+                (signals_df['macd_line'] > signals_df['signal_line']) &
+                (signals_df['histogram'] > 0) &
+                (signals_df['histogram'] > signals_df['histogram'].shift(1)) &  # Accelerating
+                (signals_df['macd_line'] > signals_df['macd_line'].shift(2)) &  # MACD trending up
 
-            # Trend & Structure - Must be strong
-            (signals_df['close'] > signals_df['ema_20']) &  # Price above EMA20
-            (signals_df['close'] > signals_df['ema_50']) &  # Price above EMA50
-            (signals_df['ema_20'] > signals_df['ema_50']) &  # MA alignment
-            (signals_df['trend_strong_bullish']) &  # Strong bullish trend
+                # Trend & Structure - Must be strong
+                (signals_df['close'] > signals_df['ema_20']) &  # Price above EMA20
+                (signals_df['close'] > signals_df['ema_50']) &  # Price above EMA50
+                (signals_df['ema_20'] > signals_df['ema_50']) &  # MA alignment
+                (signals_df['trend_strong_bullish']) &  # Strong bullish trend
 
-            # Volume - Strong confirmation
-            signals_df['volume_vol_bull'] &
-            (signals_df['volume'] > signals_df['volume'].rolling(20).mean() * 1.1) &  # Above average
+                # Volume - Strong confirmation
+                signals_df['volume_vol_bull'] &
+                (signals_df['volume'] > signals_df['volume'].rolling(20).mean() * 1.1) &  # Above average
 
-            # Market Conditions
-            ~signals_df['advanced_high_volatility']  # Avoid high volatility
-        )
+                # Market Conditions
+                ~signals_df['advanced_high_volatility'] &  # Avoid high volatility
+
+                # OPTIMAL ADX FILTER (20-30 range based on backtest analysis)
+                ~signals_df['advanced_adx_choppy'] &  # Not choppy (ADX > 20)
+                ~signals_df['advanced_adx_strong_trending']  # Not extreme (ADX < 30)
+            )
+        else:
+            # Original without ADX filter
+            original_buy_trigger = (
+                # RSI Criteria - Strong momentum
+                (signals_df['rsi'] > 56) &  # Stronger than before (was 54)
+                (signals_df['rsi'] < 70) &  # Not overbought
+                (signals_df['rsi'] > signals_df['rsi'].shift(1)) &  # RSI rising
+                (signals_df['rsi'] > signals_df['rsi'].shift(3)) &  # Sustained rise
+
+                # MACD Criteria - Strong bullish
+                (signals_df['macd_line'] > signals_df['signal_line']) &
+                (signals_df['histogram'] > 0) &
+                (signals_df['histogram'] > signals_df['histogram'].shift(1)) &  # Accelerating
+                (signals_df['macd_line'] > signals_df['macd_line'].shift(2)) &  # MACD trending up
+
+                # Trend & Structure - Must be strong
+                (signals_df['close'] > signals_df['ema_20']) &  # Price above EMA20
+                (signals_df['close'] > signals_df['ema_50']) &  # Price above EMA50
+                (signals_df['ema_20'] > signals_df['ema_50']) &  # MA alignment
+                (signals_df['trend_strong_bullish']) &  # Strong bullish trend
+
+                # Volume - Strong confirmation
+                signals_df['volume_vol_bull'] &
+                (signals_df['volume'] > signals_df['volume'].rolling(20).mean() * 1.1) &  # Above average
+
+                # Market Conditions
+                ~signals_df['advanced_high_volatility']  # Avoid high volatility
+            )
 
         # Enhanced SELL criteria - Very selective
-        original_sell_trigger = (
-            # RSI Criteria
-            (signals_df['rsi'] < 44) &  # Stronger than before (was 45)
-            (signals_df['rsi'] > 30) &  # Not oversold
-            (signals_df['rsi'] < signals_df['rsi'].shift(1)) &  # RSI falling
-            (signals_df['rsi'] < signals_df['rsi'].shift(3)) &  # Sustained fall
+        if self.config.enable_regime_filter:
+            # Apply optimal ADX filter (20-30 range)
+            original_sell_trigger = (
+                # RSI Criteria
+                (signals_df['rsi'] < 44) &  # Stronger than before (was 45)
+                (signals_df['rsi'] > 30) &  # Not oversold
+                (signals_df['rsi'] < signals_df['rsi'].shift(1)) &  # RSI falling
+                (signals_df['rsi'] < signals_df['rsi'].shift(3)) &  # Sustained fall
 
-            # MACD Criteria
-            (signals_df['macd_line'] < signals_df['signal_line']) &
-            (signals_df['histogram'] < 0) &
-            (signals_df['histogram'] < signals_df['histogram'].shift(1)) &  # Accelerating down
-            (signals_df['macd_line'] < signals_df['macd_line'].shift(2)) &  # MACD trending down
+                # MACD Criteria
+                (signals_df['macd_line'] < signals_df['signal_line']) &
+                (signals_df['histogram'] < 0) &
+                (signals_df['histogram'] < signals_df['histogram'].shift(1)) &  # Accelerating down
+                (signals_df['macd_line'] < signals_df['macd_line'].shift(2)) &  # MACD trending down
 
-            # Trend & Structure
-            (signals_df['close'] < signals_df['ema_20']) &  # Price below EMA20
-            (signals_df['close'] < signals_df['ema_50']) &  # Price below EMA50
-            (signals_df['ema_20'] < signals_df['ema_50']) &  # MA alignment
-            (signals_df['trend_strong_bearish']) &  # Strong bearish trend
+                # Trend & Structure
+                (signals_df['close'] < signals_df['ema_20']) &  # Price below EMA20
+                (signals_df['close'] < signals_df['ema_50']) &  # Price below EMA50
+                (signals_df['ema_20'] < signals_df['ema_50']) &  # MA alignment
+                (signals_df['trend_strong_bearish']) &  # Strong bearish trend
 
-            # Volume
-            signals_df['volume_vol_bear'] &
-            (signals_df['volume'] > signals_df['volume'].rolling(20).mean() * 1.1) &
+                # Volume
+                signals_df['volume_vol_bear'] &
+                (signals_df['volume'] > signals_df['volume'].rolling(20).mean() * 1.1) &
 
-            # Market Conditions
-            ~signals_df['advanced_high_volatility']
-        )
+                # Market Conditions
+                ~signals_df['advanced_high_volatility'] &
+
+                # OPTIMAL ADX FILTER (20-30 range based on backtest analysis)
+                ~signals_df['advanced_adx_choppy'] &  # Not choppy (ADX > 20)
+                ~signals_df['advanced_adx_strong_trending']  # Not extreme (ADX < 30)
+            )
+        else:
+            # Original without ADX filter
+            original_sell_trigger = (
+                # RSI Criteria
+                (signals_df['rsi'] < 44) &  # Stronger than before (was 45)
+                (signals_df['rsi'] > 30) &  # Not oversold
+                (signals_df['rsi'] < signals_df['rsi'].shift(1)) &  # RSI falling
+                (signals_df['rsi'] < signals_df['rsi'].shift(3)) &  # Sustained fall
+
+                # MACD Criteria
+                (signals_df['macd_line'] < signals_df['signal_line']) &
+                (signals_df['histogram'] < 0) &
+                (signals_df['histogram'] < signals_df['histogram'].shift(1)) &  # Accelerating down
+                (signals_df['macd_line'] < signals_df['macd_line'].shift(2)) &  # MACD trending down
+
+                # Trend & Structure
+                (signals_df['close'] < signals_df['ema_20']) &  # Price below EMA20
+                (signals_df['close'] < signals_df['ema_50']) &  # Price below EMA50
+                (signals_df['ema_20'] < signals_df['ema_50']) &  # MA alignment
+                (signals_df['trend_strong_bearish']) &  # Strong bearish trend
+
+                # Volume
+                signals_df['volume_vol_bear'] &
+                (signals_df['volume'] > signals_df['volume'].rolling(20).mean() * 1.1) &
+
+                # Market Conditions
+                ~signals_df['advanced_high_volatility']
+            )
         
         # Disable short trades if configured
         if not getattr(self.config, 'allow_short_trades', True):
@@ -365,24 +466,55 @@ class ProTradingSystem:
         # Apply gap filter to prevent too frequent signals
         buy_final = buy_signal.copy()
         sell_final = sell_signal.copy()
-        
-        # Use stricter gap in ultra-strict mode
-        min_gap = self.config.min_bars_gap * 2 if self.config.ultra_strict_mode else self.config.min_bars_gap
-        
-        if min_gap > 1:
-            # Apply minimum gap between signals
+
+        # Determine min_gap based on mode and market regime
+        if self.config.ultra_strict_mode:
+            min_gap = self.config.min_bars_gap * 2
+        else:
+            min_gap = self.config.min_bars_gap
+
+        # Adaptive min_bars_gap based on market regime (optional, can be disabled)
+        if getattr(self.config, 'enable_adaptive_gap_filtering', False):
+            # Apply minimum gap between signals with regime-aware filtering
             last_signal_idx = None
-            
+
             for i in range(len(signals_df)):
                 current_signal = buy_signal.iloc[i] or sell_signal.iloc[i]
-                
+
                 if current_signal:
-                    if last_signal_idx is None or i - last_signal_idx >= self.config.min_bars_gap:
+                    # Determine regime-specific gap at this bar
+                    if signals_df['advanced_regime_choppy'].iloc[i]:
+                        # Choppy market: use larger gap (trade less frequently)
+                        regime_gap = getattr(self.config, 'choppy_min_bars_gap', 12)
+                    elif signals_df['advanced_regime_strong_trending'].iloc[i]:
+                        # Strong trending: use smaller gap (can trade more)
+                        regime_gap = getattr(self.config, 'trending_min_bars_gap', 6)
+                    else:
+                        # Normal: use standard gap
+                        regime_gap = min_gap
+
+                    if last_signal_idx is None or i - last_signal_idx >= regime_gap:
                         last_signal_idx = i
                     else:
                         # Gap too small, filter out this signal
                         buy_final.iloc[i] = False
                         sell_final.iloc[i] = False
+        else:
+            # Original gap filtering (no regime adaptation)
+            if min_gap > 1:
+                # Apply minimum gap between signals
+                last_signal_idx = None
+
+                for i in range(len(signals_df)):
+                    current_signal = buy_signal.iloc[i] or sell_signal.iloc[i]
+
+                    if current_signal:
+                        if last_signal_idx is None or i - last_signal_idx >= min_gap:
+                            last_signal_idx = i
+                        else:
+                            # Gap too small, filter out this signal
+                            buy_final.iloc[i] = False
+                            sell_final.iloc[i] = False
         
         # Store all signals for analysis and debugging
         signals_df['professional_buy_trigger'] = professional_buy_trigger
@@ -400,12 +532,27 @@ class ProTradingSystem:
         
         return signals_df
     
-    def run_backtest(self, start_date: Optional[str] = None, 
+    def _get_market_regime(self, row: pd.Series) -> str:
+        """Determine market regime from signal row"""
+        if not getattr(self.config, 'enable_adaptive_parameters', False):
+            return 'normal'
+
+        # Check regime flags in order of priority
+        if row.get('advanced_regime_choppy', False):
+            return 'choppy'
+        elif row.get('advanced_regime_strong_trending', False):
+            return 'strong_trending'
+        elif row.get('advanced_regime_normal_trending', False):
+            return 'normal'
+        else:
+            return 'normal'
+
+    def run_backtest(self, start_date: Optional[str] = None,
                     end_date: Optional[str] = None) -> Dict[str, Any]:
         """Run complete backtest simulation with database integration"""
         if self.signals is None:
             raise ValueError("No signals calculated. Call calculate_signals() first.")
-        
+
         # Filter data by date range if specified
         data = self.signals.copy()
         if start_date:
@@ -421,7 +568,7 @@ class ProTradingSystem:
         sell_signals = []
         exits = []
         
-        print(f"📊 Running backtest on {len(data)} bars...")
+        print(f"[*] Running backtest on {len(data)} bars...")
         
         # Iterate through each bar
         for i, (timestamp, row) in enumerate(data.iterrows()):
@@ -464,8 +611,9 @@ class ProTradingSystem:
             elif self.position_manager.can_enter_trade():
                 # Buy signal
                 if row.get('buy_confirmed', False):
+                    market_regime = self._get_market_regime(row)
                     success = self.position_manager.enter_long_position(
-                        row['close'], timestamp, row['atr']
+                        row['close'], timestamp, row['atr'], market_regime=market_regime
                     )
                     if success:
                         buy_signals.append({
@@ -488,8 +636,9 @@ class ProTradingSystem:
                 
                 # Sell signal (short position - if enabled)
                 elif row.get('sell_confirmed', False):
+                    market_regime = self._get_market_regime(row)
                     success = self.position_manager.enter_short_position(
-                        row['close'], timestamp, row['atr']
+                        row['close'], timestamp, row['atr'], market_regime=market_regime
                     )
                     if success:
                         sell_signals.append({
@@ -679,13 +828,13 @@ class ProTradingSystem:
         print(f"Period: {results['data'].index[0].date()} to {results['data'].index[-1].date()}")
         print(f"Total Bars: {len(results['data'])}")
         
-        print(f"\n📊 Trade Statistics:")
+        print(f"\n[*] Trade Statistics:")
         print(f"Total Trades: {stats['total_trades']}")
         print(f"Winning Trades: {stats['winning_trades']}")
         print(f"Losing Trades: {stats['losing_trades']}")
         print(f"Win Rate: {stats['win_rate']:.1f}%")
         
-        print(f"\n💰 Performance Metrics:")
+        print(f"\n[*] Performance Metrics:")
         print(f"Average Win: {stats['avg_win']:.2f}%")
         print(f"Average Loss: {stats['avg_loss']:.2f}%")
         print(f"Total P&L: {stats['total_pnl']:.2f}%")
@@ -695,7 +844,7 @@ class ProTradingSystem:
         print(f"Profit Factor: {stats['profit_factor']:.2f}")
         
         if results['trades']:
-            print(f"\n📈 Recent Trades:")
+            print(f"\n[*] Recent Trades:")
             print("-" * 80)
             for trade in results['trades'][-5:]:
                 if trade is None:
@@ -720,7 +869,7 @@ class ProTradingSystem:
         symbol = symbol or self.config.symbol
         interval = interval or self.config.interval
         
-        print(f"🚀 Starting live trading for {symbol} {interval}")
+        print(f"[*] Starting live trading for {symbol} {interval}")
         
         # Check if live trading is enabled (API keys provided)
         if not self.binance_provider.is_live_trading:
@@ -733,7 +882,7 @@ class ProTradingSystem:
         """Stop live trading"""
         if self.live_system:
             self.live_system.stop_monitoring()
-        print("🛑 Live trading stopped")
+        print("[*] Live trading stopped")
     
     def get_portfolio_status(self) -> Dict[str, Any]:
         """Get current portfolio status"""
@@ -744,29 +893,30 @@ class ProTradingSystem:
         else:
             return {'error': 'No portfolio data available'}
     
-    def fetch_data(self, symbol: Optional[str] = None, 
+    def fetch_data(self, symbol: Optional[str] = None,
                    interval: Optional[str] = None,
                    days: Optional[int] = None,
-                   start_date: Optional[str] = None) -> pd.DataFrame:
+                   start_date: Optional[str] = None,
+                   end_date: Optional[str] = None) -> pd.DataFrame:
         """Fetch market data using Binance"""
         symbol = symbol or self.config.symbol
         interval = interval or self.config.interval
-        
+
         if self.binance_provider:
-            return self._fetch_binance_data(symbol, interval, days, start_date)
+            return self._fetch_binance_data(symbol, interval, days, start_date, end_date)
         else:
             raise ValueError("Binance provider not available")
     
-    def _fetch_binance_data(self, symbol: str, interval: str, days: int = None, start_date: str = None) -> pd.DataFrame:
+    def _fetch_binance_data(self, symbol: str, interval: str, days: int = None, start_date: str = None, end_date: str = None) -> pd.DataFrame:
         """Fetch data from Binance with comprehensive multi-chunk support"""
         try:
-            print(f"🔍 _fetch_binance_data called with start_date={start_date}")
+            print(f"[*] _fetch_binance_data called with start_date={start_date}, end_date={end_date}")
             # If start_date is specified, use comprehensive fetching for large date ranges
             if start_date:
-                print(f"🔄 Using comprehensive fetching for start_date: {start_date}")
-                return self._fetch_comprehensive_data(symbol, interval, start_date)
-            
-            print("📊 Using standard fetching (no start_date)")
+                print(f"[*] Using comprehensive fetching for start_date: {start_date}, end_date: {end_date}")
+                return self._fetch_comprehensive_data(symbol, interval, start_date, end_date)
+
+            print("[*] Using standard fetching (no start_date)")
             # Calculate days based on lookback period if not specified
             if days is None:
                 lookback = self.config.lookback_period
@@ -837,7 +987,11 @@ class ProTradingSystem:
         for name, series in all_indicators['macd'].items():
             signals_df[name] = series
         signals_df['atr'] = all_indicators['atr']
-        
+
+        # ADX indicators
+        for name, series in all_indicators['adx'].items():
+            signals_df[f'adx_{name}'] = series
+
         # Trend analysis
         for name, series in all_indicators['trend'].items():
             signals_df[f'trend_{name}'] = series
@@ -919,8 +1073,9 @@ class ProTradingSystem:
             elif self.position_manager.can_enter_trade():
                 # Buy signal
                 if row.get('buy_confirmed', False):
+                    market_regime = self._get_market_regime(row)
                     success = self.position_manager.enter_long_position(
-                        row['close'], timestamp, row['atr']
+                        row['close'], timestamp, row['atr'], market_regime=market_regime
                     )
                     if success:
                         buy_signals.append({
@@ -929,9 +1084,10 @@ class ProTradingSystem:
                             'type': 'BUY'
                         })
                         self._update_last_signal_info('BUY', i)
-                
+
                 # Sell signal
                 elif row.get('sell_confirmed', False):
+                    market_regime = self._get_market_regime(row)
                     success = self.position_manager.enter_short_position(
                         row['close'], timestamp, row['atr']
                     )
@@ -1177,7 +1333,7 @@ class ProTradingSystem:
         symbol = symbol or self.config.symbol
         interval = interval or self.config.interval
         
-        print(f"🚀 Starting live trading for {symbol} {interval}")
+        print(f"[*] Starting live trading for {symbol} {interval}")
         
         # Fetch initial historical data
         initial_data = self.live_system.fetch_initial_data(symbol, interval, days=30)
@@ -1200,9 +1356,9 @@ class ProTradingSystem:
                 current_signals = self.get_live_signals()
                 
                 if current_signals['buy_signal']:
-                    print(f"🟢 BUY SIGNAL DETECTED at ${kline_data['close']:.4f}!")
+                    print(f"[*] BUY SIGNAL DETECTED at ${kline_data['close']:.4f}!")
                 elif current_signals['sell_signal']:
-                    print(f"🔴 SELL SIGNAL DETECTED at ${kline_data['close']:.4f}!")
+                    print(f"[*] SELL SIGNAL DETECTED at ${kline_data['close']:.4f}!")
                 
                 # Update position management
                 if self.position_manager.is_in_trade():
@@ -1226,9 +1382,9 @@ class ProTradingSystem:
                             exit_reason
                         )
                         if trade:
-                            print(f"📊 TRADE CLOSED: {trade.trade_type} | P&L: {trade.pnl_percent:+.2f}% | Reason: {exit_reason}")
+                            print(f"[*] TRADE CLOSED: {trade.trade_type} | P&L: {trade.pnl_percent:+.2f}% | Reason: {exit_reason}")
                         else:
-                            print(f"📊 TRADE CLOSED | Reason: {exit_reason}")
+                            print(f"[*] TRADE CLOSED | Reason: {exit_reason}")
                 
             except Exception as e:
                 print(f"Error in live update: {e}")
@@ -1238,8 +1394,8 @@ class ProTradingSystem:
         success = self.live_system.start_live_monitoring(symbol, interval)
         
         if success:
-            print(f"✅ Live trading started for {symbol}")
-            print("💡 Press Ctrl+C to stop live trading")
+            print(f"[OK] Live trading started for {symbol}")
+            print("[*] Press Ctrl+C to stop live trading")
         
         return success
     
@@ -1247,7 +1403,7 @@ class ProTradingSystem:
         """Stop live trading"""
         if self.live_system:
             self.live_system.stop_monitoring()
-            print("🛑 Live trading stopped")
+            print("[*] Live trading stopped")
     
     def get_binance_market_info(self, symbol: Optional[str] = None) -> Dict[str, Any]:
         """Get additional Binance market information"""
@@ -1275,17 +1431,20 @@ class ProTradingSystem:
             print(f"Error getting market info: {e}")
             return {}
     
-    def _fetch_comprehensive_data(self, symbol: str, interval: str, start_date: str) -> pd.DataFrame:
+    def _fetch_comprehensive_data(self, symbol: str, interval: str, start_date: str, end_date: str = None) -> pd.DataFrame:
         """Fetch comprehensive historical data in chunks to overcome API limits"""
         from datetime import datetime, timedelta
         import time
-        
-        print(f"🔄 Fetching comprehensive data from {start_date} to present...")
-        
-        # Parse start date
+
+        # Parse dates
         start_dt = datetime.strptime(start_date, '%Y-%m-%d')
-        end_dt = datetime.now()
-        
+        if end_date:
+            end_dt = pd.Timestamp(datetime.strptime(end_date, '%Y-%m-%d'))
+            print(f"[*] Fetching comprehensive data from {start_date} to {end_date}...")
+        else:
+            end_dt = pd.Timestamp.now()
+            print(f"[*] Fetching comprehensive data from {start_date} to present...")
+
         # Calculate bars per day for the interval
         if interval.endswith('h'):
             hours_per_bar = int(interval[:-1])
@@ -1295,66 +1454,86 @@ class ProTradingSystem:
             bars_per_day = (24 * 60) // minutes_per_bar
         else:
             bars_per_day = 1  # Daily
-        
+
         # Calculate total days and required chunks
         total_days = (end_dt - start_dt).days + 1
         total_bars_needed = total_days * bars_per_day
-        chunks_needed = min(20, (total_bars_needed // 1000) + 1)  # Limit to 20 chunks for safety
-        
-        print(f"📊 Estimated {total_bars_needed:,} bars needed over {total_days} days")
-        print(f"🔄 Will fetch in {chunks_needed} chunks of 1000 bars each")
-        
+        chunks_needed = (total_bars_needed // 1000) + 1  # No arbitrary limit - fetch as many as needed
+
+        print(f"[*] Estimated {total_bars_needed:,} bars needed over {total_days} days")
+        print(f"[*] Will fetch in up to {chunks_needed} chunks of 1000 bars each")
+
         all_data = []
         current_start = start_date
-        
-        for chunk in range(chunks_needed):
+        chunk = 0
+        max_chunks = 200  # Safety limit to prevent infinite loops (200k bars max)
+
+        while chunk < max_chunks:
             try:
-                print(f"   Fetching chunk {chunk + 1}/{chunks_needed} starting from {current_start}...")
-                
+                chunk += 1
+                print(f"   Fetching chunk {chunk}/{chunks_needed} starting from {current_start}...")
+
                 # Fetch this chunk
                 chunk_data = self.binance_provider.get_historical_data(
                     symbol, interval, limit=1000, start_str=current_start
                 )
-                
+
                 if chunk_data.empty:
                     print(f"   No more data available from {current_start}")
                     break
-                
+
                 all_data.append(chunk_data)
-                
+
                 # Update start point for next chunk (last timestamp + 1 period)
                 last_timestamp = chunk_data.index[-1]
+
+                # Normalize timezone for comparison
+                last_ts_normalized = pd.Timestamp(last_timestamp).tz_localize(None) if hasattr(last_timestamp, 'tz') and last_timestamp.tz else pd.Timestamp(last_timestamp)
+                end_dt_normalized = end_dt.tz_localize(None) if hasattr(end_dt, 'tz') and end_dt.tz else end_dt
+
+                # Check if we've reached current time or got less than 1000 bars (end of data)
+                if len(chunk_data) < 1000 or last_ts_normalized >= end_dt_normalized:
+                    print(f"   Reached end of available data (fetched {len(chunk_data)} bars)")
+                    break
+
+                # Calculate next start time
                 if interval.endswith('h'):
                     next_start = last_timestamp + timedelta(hours=hours_per_bar)
                 elif interval.endswith('m'):
                     next_start = last_timestamp + timedelta(minutes=minutes_per_bar)
                 else:
                     next_start = last_timestamp + timedelta(days=1)
-                
+
                 current_start = next_start.strftime('%Y-%m-%d %H:%M:%S')
-                
-                # Check if we've reached current time or got less than 1000 bars (end of data)
-                if len(chunk_data) < 1000 or last_timestamp >= end_dt:
-                    print(f"   Reached end of available data")
-                    break
-                
+
                 # Small delay to avoid hitting rate limits
                 time.sleep(0.1)
-                
+
             except Exception as e:
-                print(f"   Error fetching chunk {chunk + 1}: {e}")
+                print(f"   Error fetching chunk {chunk}: {e}")
+                if chunk == 1:  # If first chunk fails, propagate error
+                    raise
+                print(f"   Continuing with {len(all_data)} chunks already fetched...")
                 break
-        
+
         if not all_data:
             raise ValueError(f"No data could be fetched for {symbol} from {start_date}")
-        
+
         # Combine all chunks
         combined_data = pd.concat(all_data, ignore_index=False)
-        combined_data = combined_data.drop_duplicates()  # Remove any overlapping data
-        combined_data = combined_data.sort_index()  # Ensure chronological order
-        
-        print(f"✅ Successfully fetched {len(combined_data):,} bars from {combined_data.index[0].date()} to {combined_data.index[-1].date()}")
-        
+
+        # Remove duplicates based on index (timestamp)
+        combined_data = combined_data[~combined_data.index.duplicated(keep='first')]
+
+        # Ensure chronological order
+        combined_data = combined_data.sort_index()
+
+        bars_fetched = len(combined_data)
+        coverage_pct = (bars_fetched / total_bars_needed * 100) if total_bars_needed > 0 else 100
+
+        print(f"[OK] Successfully fetched {bars_fetched:,} bars from {combined_data.index[0].date()} to {combined_data.index[-1].date()}")
+        print(f"[*] Data coverage: {coverage_pct:.1f}% of estimated {total_bars_needed:,} bars")
+
         self.data = combined_data
         return combined_data
     

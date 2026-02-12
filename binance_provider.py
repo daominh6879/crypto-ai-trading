@@ -66,12 +66,12 @@ class BinanceDataProvider:
                         print("✅ Binance account connection verified")
                     except Exception as e:
                         print(f"⚠️ Warning: API key verification failed: {e}")
-                        print("🔄 Falling back to data-only mode")
+                        print("[*] Falling back to data-only mode")
                         self.is_live_trading = False
                         self.client = Client()
                 else:
                     self.client = Client()
-                    print("📊 Binance client initialized for data access only (no API keys)")
+                    print("[*] Binance client initialized for data access only (no API keys)")
                     
             except Exception as e:
                 print(f"Warning: Could not initialize Binance client: {e}")
@@ -187,7 +187,7 @@ class BinanceDataProvider:
             if quantity <= 0:
                 return {'error': 'Invalid quantity', 'orderId': None}
             
-            print(f"🟢 Placing BUY order: {quantity} {symbol} at ${price}")
+            print(f"[*] Placing BUY order: {quantity} {symbol} at ${price}")
             
             if order_type == 'MARKET':
                 order = self.client.order_market_buy(
@@ -237,7 +237,7 @@ class BinanceDataProvider:
             if price is None:
                 price = self.get_latest_price(symbol)
             
-            print(f"🔴 Placing SELL order: {quantity} {symbol} at ${price}")
+            print(f"[*] Placing SELL order: {quantity} {symbol} at ${price}")
             
             if order_type == 'MARKET':
                 order = self.client.order_market_sell(
@@ -421,7 +421,7 @@ class BinanceDataProvider:
             print("Binance client not available for live streaming")
             return False
         
-        print(f"📡 Live stream simulation for {symbol} {interval}")
+        print(f"[*] Live stream simulation for {symbol} {interval}")
         print("Note: Using polling method instead of WebSocket for compatibility")
         
         self.live_data_callback = callback
@@ -466,7 +466,7 @@ class BinanceDataProvider:
                             
                             last_kline = current_kline[0]
                             
-                            print(f"🟢 {kline_info['timestamp'].strftime('%H:%M:%S')} | {symbol} | ${kline_info['close']:,.2f}")
+                            print(f"[*] {kline_info['timestamp'].strftime('%H:%M:%S')} | {symbol} | ${kline_info['close']:,.2f}")
                     
                     # Wait before next poll (adjust based on interval)
                     interval_seconds = self._get_interval_seconds(interval)
@@ -527,7 +527,7 @@ class BinanceDataProvider:
                 self.socket_manager.close()
             except:
                 pass
-        print("🛑 Live stream stopped")
+        print("[*] Live stream stopped")
     
     def get_latest_price(self, symbol: str) -> float:
         """Get latest price for symbol"""
@@ -595,16 +595,18 @@ class LiveTradingSystem:
     Enhanced live trading system with real Binance order execution and database integration
     """
     
-    def __init__(self, config: TradingConfig, binance_provider: BinanceDataProvider):
+    def __init__(self, config: TradingConfig, binance_provider: BinanceDataProvider, telegram_notifier=None):
         self.config = config
         self.binance = binance_provider
+        self.telegram = telegram_notifier
         self.historical_data = None
         self.live_data_buffer = []
         self.max_buffer_size = 1000
         self.update_callbacks = []
         self.position_size_usdt = 100.0  # Default position size in USDT
         self.max_positions = 3  # Maximum concurrent positions
-        
+        self.is_paper_trading = not binance_provider.is_live_trading
+
         # Import database here to avoid circular imports
         try:
             from database import get_database
@@ -616,7 +618,7 @@ class LiveTradingSystem:
     def set_position_size(self, usdt_amount: float):
         """Set position size for trades"""
         self.position_size_usdt = usdt_amount
-        print(f"💰 Position size set to ${usdt_amount} USDT")
+        print(f"[*] Position size set to ${usdt_amount} USDT")
     
     def add_update_callback(self, callback: Callable):
         """Add callback for live updates"""
@@ -644,27 +646,43 @@ class LiveTradingSystem:
     def execute_buy_signal(self, symbol: str, price: float, signal_data: Dict) -> Dict[str, Any]:
         """Execute a buy signal with real Binance order"""
         try:
+            # Send Telegram notification for signal detection
+            if self.telegram:
+                self.telegram.notify_buy_signal(symbol, price, signal_data)
+
             # Check if we can open new position
             if not self._can_open_position(symbol):
-                return {'success': False, 'reason': 'Position limit reached or position exists'}
-            
+                reason = 'Position limit reached or position exists'
+                if self.telegram:
+                    self.telegram.notify_order_failed('BUY', symbol, reason)
+                return {'success': False, 'reason': reason}
+
             # Place buy order
             order_result = self.binance.place_buy_order(
-                symbol=symbol, 
+                symbol=symbol,
                 usdt_amount=self.position_size_usdt,
                 price=price
             )
-            
+
             if 'error' in order_result:
+                if self.telegram:
+                    self.telegram.notify_order_failed('BUY', symbol, order_result['error'])
                 return {'success': False, 'reason': order_result['error']}
-            
+
+            # Send order executed notification
+            if self.telegram and order_result.get('success'):
+                self.telegram.notify_order_executed(
+                    'BUY', symbol, order_result['quantity'], order_result['price'],
+                    str(order_result['orderId']), self.is_paper_trading
+                )
+
             # Save position to database
             if self.db and order_result.get('success'):
                 from database import DatabasePosition
-                
+
                 # Calculate levels based on ATR (simplified for now)
                 atr = signal_data.get('atr', price * 0.02)  # 2% fallback
-                
+
                 position = DatabasePosition(
                     symbol=symbol,
                     entry_price=order_result['price'],
@@ -676,10 +694,18 @@ class LiveTradingSystem:
                     quantity=order_result['quantity'],
                     binance_order_id=str(order_result['orderId'])
                 )
-                
+
                 position_id = self.db.save_position(position)
-                print(f"📊 Position saved to database with ID: {position_id}")
-                
+                print(f"[*] Position saved to database with ID: {position_id}")
+
+                # Send position opened notification
+                if self.telegram:
+                    self.telegram.notify_position_opened(
+                        symbol, "LONG", position.entry_price, position.quantity,
+                        position.stop_loss, position.take_profit_1, position.take_profit_2,
+                        self.is_paper_trading
+                    )
+
                 # Save signal to database
                 self.db.save_signal(
                     symbol=symbol,
@@ -688,7 +714,7 @@ class LiveTradingSystem:
                     timestamp=datetime.now(),
                     **signal_data
                 )
-            
+
             return {
                 'success': True,
                 'order_id': order_result['orderId'],
@@ -696,33 +722,51 @@ class LiveTradingSystem:
                 'quantity': order_result['quantity'],
                 'type': 'BUY'
             }
-            
+
         except Exception as e:
             error_msg = f"Error executing buy signal: {e}"
             print(f"❌ {error_msg}")
+            if self.telegram:
+                self.telegram.notify_error('BUY_SIGNAL_ERROR', str(e))
             return {'success': False, 'reason': error_msg}
     
     def execute_sell_signal(self, symbol: str, price: float, signal_data: Dict) -> Dict[str, Any]:
         """Execute a sell signal (close position)"""
         try:
+            # Send Telegram notification for signal detection
+            if self.telegram:
+                self.telegram.notify_sell_signal(symbol, price, signal_data)
+
             # Get active position from database
             if not self.db:
                 return {'success': False, 'reason': 'Database not available'}
-            
+
             position = self.db.get_active_position(symbol)
             if not position:
-                return {'success': False, 'reason': 'No active position found'}
-            
+                reason = 'No active position found'
+                if self.telegram:
+                    self.telegram.notify_order_failed('SELL', symbol, reason)
+                return {'success': False, 'reason': reason}
+
             # Place sell order
             order_result = self.binance.place_sell_order(
                 symbol=symbol,
                 quantity=position.quantity,
                 price=price
             )
-            
+
             if 'error' in order_result:
+                if self.telegram:
+                    self.telegram.notify_order_failed('SELL', symbol, order_result['error'])
                 return {'success': False, 'reason': order_result['error']}
-            
+
+            # Send order executed notification
+            if self.telegram and order_result.get('success'):
+                self.telegram.notify_order_executed(
+                    'SELL', symbol, order_result['quantity'], order_result['price'],
+                    str(order_result['orderId']), self.is_paper_trading
+                )
+
             # Close position in database
             if order_result.get('success'):
                 trade = self.db.close_position(
@@ -732,9 +776,17 @@ class LiveTradingSystem:
                     exit_reason="Signal Exit",
                     exit_order_id=str(order_result['orderId'])
                 )
-                
-                print(f"📊 Position closed. P&L: {trade.pnl_percent:+.2f}%")
-                
+
+                print(f"[*] Position closed. P&L: {trade.pnl_percent:+.2f}%")
+
+                # Send position closed notification
+                if self.telegram:
+                    self.telegram.notify_position_closed(
+                        symbol, position.trade_type, position.entry_price,
+                        order_result['price'], position.quantity, trade.pnl_percent,
+                        trade.pnl_amount, "Signal Exit", self.is_paper_trading
+                    )
+
                 # Save exit signal
                 self.db.save_signal(
                     symbol=symbol,
@@ -743,7 +795,7 @@ class LiveTradingSystem:
                     timestamp=datetime.now(),
                     **signal_data
                 )
-            
+
             return {
                 'success': True,
                 'order_id': order_result['orderId'],
@@ -751,10 +803,12 @@ class LiveTradingSystem:
                 'quantity': order_result['quantity'],
                 'type': 'SELL'
             }
-            
+
         except Exception as e:
             error_msg = f"Error executing sell signal: {e}"
             print(f"❌ {error_msg}")
+            if self.telegram:
+                self.telegram.notify_error('SELL_SIGNAL_ERROR', str(e))
             return {'success': False, 'reason': error_msg}
     
     def check_exit_conditions(self, symbol: str, current_price: float) -> Dict[str, Any]:
@@ -807,7 +861,7 @@ class LiveTradingSystem:
                         exit_order_id=str(exit_result['orderId'])
                     )
                     
-                    print(f"🎯 {exit_reason} hit! Position closed. P&L: {trade.pnl_percent:+.2f}%")
+                    print(f"[*] {exit_reason} hit! Position closed. P&L: {trade.pnl_percent:+.2f}%")
                     
                     return {
                         'should_exit': True,
@@ -855,7 +909,7 @@ class LiveTradingSystem:
             
             if updated:
                 self.db.save_position(position)
-                print(f"📈 Trailing stop updated for {symbol}: ${position.trailing_stop:.4f}")
+                print(f"[*] Trailing stop updated for {symbol}: ${position.trailing_stop:.4f}")
                 
         except Exception as e:
             print(f"Error updating trailing stops: {e}")
@@ -929,7 +983,7 @@ class LiveTradingSystem:
                 # Check exit conditions
                 exit_check = self.check_exit_conditions(symbol, current_price)
                 if exit_check['should_exit']:
-                    print(f"🎯 Position automatically closed: {exit_check['exit_reason']}")
+                    print(f"[*] Position automatically closed: {exit_check['exit_reason']}")
                 
                 # Notify callbacks with trading context
                 for callback in self.update_callbacks:
@@ -948,11 +1002,11 @@ class LiveTradingSystem:
         success = self.binance.start_live_stream(symbol, interval, live_update_handler)
         
         if success:
-            print(f"🔴 LIVE: Started monitoring {symbol} {interval}")
+            print(f"[*] LIVE: Started monitoring {symbol} {interval}")
             if self.binance.is_live_trading:
-                print("💰 Live trading is ENABLED - Orders will be executed automatically")
+                print("[*] Live trading is ENABLED - Orders will be executed automatically")
             else:
-                print("📊 Data monitoring only - No orders will be placed")
+                print("[*] Data monitoring only - No orders will be placed")
         else:
             print(f"❌ Failed to start live monitoring for {symbol}")
             
@@ -964,7 +1018,7 @@ class LiveTradingSystem:
         price = kline_data['close']
         volume = self.binance.format_volume(kline_data['volume'])
         
-        status_icon = "🟢"
+        status_icon = "[*]"
         extra_info = ""
         
         # Add position info if available
@@ -972,7 +1026,7 @@ class LiveTradingSystem:
             position = self.db.get_active_position(symbol)
             if position:
                 pnl = ((price - position.entry_price) / position.entry_price * 100) if position.trade_type == "LONG" else ((position.entry_price - price) / position.entry_price * 100)
-                status_icon = "💰" if pnl > 0 else "📉"
+                status_icon = "[*]" if pnl > 0 else "[*]"
                 extra_info = f" | {position.trade_type} P&L: {pnl:+.2f}%"
         
         print(f"{status_icon} {timestamp} | {symbol} | ${price:,.4f} | Vol: {volume}{extra_info}")
@@ -1004,4 +1058,219 @@ class LiveTradingSystem:
         """Stop live monitoring"""
         self.binance.stop_live_stream()
         self.live_data_buffer.clear()
-        print("🛑 Live monitoring stopped")
+        print("[*] Live monitoring stopped")
+
+
+class PaperTradingProvider:
+    """
+    Paper trading provider that simulates order execution without real trades
+    """
+
+    def __init__(self, initial_balance: float = 10000.0):
+        self.balance_usdt = initial_balance
+        self.initial_balance = initial_balance
+        self.positions = {}  # symbol -> {quantity, entry_price}
+        self.orders = []
+        self.order_counter = 1
+        self.is_live_trading = False  # Paper trading flag
+        print(f"[*] Paper Trading Mode Initialized - Starting Balance: ${initial_balance:,.2f}")
+
+    def get_account_balance(self, asset: str = 'USDT') -> float:
+        """Get paper trading balance"""
+        if asset == 'USDT':
+            return self.balance_usdt
+        # For other assets, calculate from positions
+        total = 0.0
+        for symbol, pos in self.positions.items():
+            if asset in symbol:
+                total += pos['quantity']
+        return total
+
+    def place_buy_order(self, symbol: str, quantity: float = None, price: float = None,
+                       order_type: str = 'MARKET', usdt_amount: float = None) -> Dict[str, Any]:
+        """Simulate buy order execution"""
+        try:
+            # Calculate quantity if USDT amount provided
+            if quantity is None and usdt_amount is not None:
+                quantity = usdt_amount / price
+
+            # Check if we have enough balance
+            cost = quantity * price
+            if cost > self.balance_usdt:
+                return {
+                    'error': f'Insufficient balance. Required: ${cost:.2f}, Available: ${self.balance_usdt:.2f}',
+                    'orderId': None
+                }
+
+            # Simulate order execution
+            order_id = f"PAPER_{self.order_counter}"
+            self.order_counter += 1
+
+            # Deduct from balance (assume 0.1% trading fee)
+            fee = cost * 0.001
+            self.balance_usdt -= (cost + fee)
+
+            # Add to positions
+            if symbol in self.positions:
+                # Average in
+                existing = self.positions[symbol]
+                total_qty = existing['quantity'] + quantity
+                avg_price = ((existing['quantity'] * existing['entry_price']) + (quantity * price)) / total_qty
+                self.positions[symbol] = {
+                    'quantity': total_qty,
+                    'entry_price': avg_price
+                }
+            else:
+                self.positions[symbol] = {
+                    'quantity': quantity,
+                    'entry_price': price
+                }
+
+            # Record order
+            order = {
+                'orderId': order_id,
+                'symbol': symbol,
+                'side': 'BUY',
+                'type': order_type,
+                'quantity': quantity,
+                'price': price,
+                'cost': cost,
+                'fee': fee,
+                'status': 'FILLED',
+                'timestamp': datetime.now()
+            }
+            self.orders.append(order)
+
+            print(f"[*] [PAPER] BUY: {quantity:.6f} {symbol} @ ${price:.4f} | Balance: ${self.balance_usdt:.2f}")
+
+            return {
+                'success': True,
+                'orderId': order_id,
+                'symbol': symbol,
+                'side': 'BUY',
+                'quantity': quantity,
+                'price': price,
+                'status': 'FILLED',
+                'order': order
+            }
+
+        except Exception as e:
+            error_msg = f"Paper trading buy error: {e}"
+            print(f"❌ {error_msg}")
+            return {'error': error_msg, 'orderId': None}
+
+    def place_sell_order(self, symbol: str, quantity: float, price: float = None,
+                        order_type: str = 'MARKET') -> Dict[str, Any]:
+        """Simulate sell order execution"""
+        try:
+            # Check if we have the position
+            if symbol not in self.positions:
+                return {
+                    'error': f'No position found for {symbol}',
+                    'orderId': None
+                }
+
+            position = self.positions[symbol]
+            if quantity > position['quantity']:
+                return {
+                    'error': f'Insufficient quantity. Have: {position["quantity"]}, Trying to sell: {quantity}',
+                    'orderId': None
+                }
+
+            # Simulate order execution
+            order_id = f"PAPER_{self.order_counter}"
+            self.order_counter += 1
+
+            # Calculate proceeds (assume 0.1% trading fee)
+            proceeds = quantity * price
+            fee = proceeds * 0.001
+            self.balance_usdt += (proceeds - fee)
+
+            # Update position
+            position['quantity'] -= quantity
+            if position['quantity'] <= 0:
+                del self.positions[symbol]
+
+            # Record order
+            order = {
+                'orderId': order_id,
+                'symbol': symbol,
+                'side': 'SELL',
+                'type': order_type,
+                'quantity': quantity,
+                'price': price,
+                'proceeds': proceeds,
+                'fee': fee,
+                'status': 'FILLED',
+                'timestamp': datetime.now()
+            }
+            self.orders.append(order)
+
+            print(f"[*] [PAPER] SELL: {quantity:.6f} {symbol} @ ${price:.4f} | Balance: ${self.balance_usdt:.2f}")
+
+            return {
+                'success': True,
+                'orderId': order_id,
+                'symbol': symbol,
+                'side': 'SELL',
+                'quantity': quantity,
+                'price': price,
+                'status': 'FILLED',
+                'order': order
+            }
+
+        except Exception as e:
+            error_msg = f"Paper trading sell error: {e}"
+            print(f"❌ {error_msg}")
+            return {'error': error_msg, 'orderId': None}
+
+    def get_order_status(self, symbol: str, order_id: str) -> Dict[str, Any]:
+        """Get paper trade order status"""
+        for order in self.orders:
+            if order['orderId'] == order_id:
+                return {
+                    'orderId': order['orderId'],
+                    'symbol': order['symbol'],
+                    'status': order['status'],
+                    'side': order['side'],
+                    'quantity': order['quantity'],
+                    'executed_qty': order['quantity'],
+                    'price': order['price'],
+                    'avg_price': order['price']
+                }
+        return {'error': 'Order not found'}
+
+    def get_open_orders(self, symbol: str = None) -> list:
+        """Get open orders (always empty for paper trading as orders fill immediately)"""
+        return []
+
+    def get_portfolio_value(self, current_prices: Dict[str, float]) -> float:
+        """Calculate total portfolio value"""
+        total_value = self.balance_usdt
+        for symbol, position in self.positions.items():
+            if symbol in current_prices:
+                total_value += position['quantity'] * current_prices[symbol]
+        return total_value
+
+    def get_portfolio_pnl(self, current_prices: Dict[str, float]) -> Dict[str, Any]:
+        """Calculate overall P&L"""
+        current_value = self.get_portfolio_value(current_prices)
+        pnl_amount = current_value - self.initial_balance
+        pnl_percent = (pnl_amount / self.initial_balance) * 100
+
+        return {
+            'initial_balance': self.initial_balance,
+            'current_value': current_value,
+            'pnl_amount': pnl_amount,
+            'pnl_percent': pnl_percent,
+            'balance_usdt': self.balance_usdt,
+            'positions_count': len(self.positions)
+        }
+
+    def reset(self):
+        """Reset paper trading account"""
+        self.balance_usdt = self.initial_balance
+        self.positions.clear()
+        self.orders.clear()
+        self.order_counter = 1
+        print(f"[*] Paper Trading Account Reset - Balance: ${self.initial_balance:,.2f}")

@@ -101,7 +101,7 @@ class EnhancedPositionManager:
                         db_id=db_position.id,
                         is_active=db_position.is_active
                     )
-                    print(f"📊 Loaded active {db_position.trade_type} position from database")
+                    print(f"[*] Loaded active {db_position.trade_type} position from database")
                 else:
                     print("⚠️  Incomplete position found in database, skipping")
         except Exception as e:
@@ -116,12 +116,12 @@ class EnhancedPositionManager:
         self.last_sell_bar = -999
         self.current_bar = 0
         self.backtesting_mode = True  # Enable backtesting mode to ignore database
-        print("🔄 Position manager reset for backtesting")
+        print("[*] Position manager reset for backtesting")
     
     def enable_live_mode(self):
         """Enable live trading mode (disable backtesting isolation)"""
         self.backtesting_mode = False
-        print("📡 Live trading mode enabled")
+        print("[*] Live trading mode enabled")
     
     def is_in_trade(self) -> bool:
         """Check if currently in a trade"""
@@ -154,27 +154,64 @@ class EnhancedPositionManager:
         
         return gap_ok
     
-    def calculate_position_levels(self, entry_price: float, trade_type: str, 
-                                atr: float) -> Tuple[float, float, float]:
-        """Calculate stop loss and take profit levels"""
+    def get_adaptive_multipliers(self, market_regime: str = 'normal') -> Tuple[float, float, float]:
+        """Get adaptive risk multipliers based on market regime"""
+        if not getattr(self.config, 'enable_adaptive_parameters', False):
+            # If adaptive parameters disabled, use base values
+            return (
+                self.config.stop_loss_multiplier,
+                self.config.take_profit_1_multiplier,
+                self.config.take_profit_2_multiplier
+            )
+
+        # Adaptive parameters based on market regime
+        if market_regime == 'choppy':
+            # Tighter risk management in choppy markets
+            return (
+                getattr(self.config, 'choppy_stop_loss_multiplier', 2.0),
+                getattr(self.config, 'choppy_take_profit_1_multiplier', 2.5),
+                getattr(self.config, 'choppy_take_profit_2_multiplier', 4.0)
+            )
+        elif market_regime == 'strong_trending':
+            # Wider risk management in strong trends
+            return (
+                getattr(self.config, 'trending_stop_loss_multiplier', 3.5),
+                getattr(self.config, 'trending_take_profit_1_multiplier', 5.0),
+                getattr(self.config, 'trending_take_profit_2_multiplier', 10.0)
+            )
+        else:
+            # Normal trending or neutral - use base values
+            return (
+                self.config.stop_loss_multiplier,
+                self.config.take_profit_1_multiplier,
+                self.config.take_profit_2_multiplier
+            )
+
+    def calculate_position_levels(self, entry_price: float, trade_type: str,
+                                atr: float, market_regime: str = 'normal') -> Tuple[float, float, float]:
+        """Calculate stop loss and take profit levels with adaptive parameters"""
+        # Get regime-adaptive multipliers
+        sl_mult, tp1_mult, tp2_mult = self.get_adaptive_multipliers(market_regime)
+
         if trade_type == "LONG":
-            stop_loss = entry_price - (atr * self.config.stop_loss_multiplier)
-            take_profit_1 = entry_price + (atr * self.config.take_profit_1_multiplier)
-            take_profit_2 = entry_price + (atr * self.config.take_profit_2_multiplier)
+            stop_loss = entry_price - (atr * sl_mult)
+            take_profit_1 = entry_price + (atr * tp1_mult)
+            take_profit_2 = entry_price + (atr * tp2_mult)
         else:  # SHORT
-            stop_loss = entry_price + (atr * self.config.stop_loss_multiplier)
-            take_profit_1 = entry_price - (atr * self.config.take_profit_1_multiplier)
-            take_profit_2 = entry_price - (atr * self.config.take_profit_2_multiplier)
-        
+            stop_loss = entry_price + (atr * sl_mult)
+            take_profit_1 = entry_price - (atr * tp1_mult)
+            take_profit_2 = entry_price - (atr * tp2_mult)
+
         return stop_loss, take_profit_1, take_profit_2
     
-    def enter_position(self, trade_type: str, price: float, timestamp: datetime, 
-                      atr: float, quantity: float = 0.0, order_id: str = None) -> bool:
+    def enter_position(self, trade_type: str, price: float, timestamp: datetime,
+                      atr: float, quantity: float = 0.0, order_id: str = None,
+                      market_regime: str = 'normal') -> bool:
         """Enter a new position (universal method for LONG/SHORT)"""
         if not self.can_enter_trade():
             return False
-        
-        stop_loss, tp1, tp2 = self.calculate_position_levels(price, trade_type, atr)
+
+        stop_loss, tp1, tp2 = self.calculate_position_levels(price, trade_type, atr, market_regime)
         
         # Create position object
         position = Position(
@@ -205,9 +242,9 @@ class EnhancedPositionManager:
             
             db_id = self.db.save_position(db_position)
             position.db_id = db_id
-            print(f"💾 Position saved to database with ID: {db_id}")
+            print(f"[*] Position saved to database with ID: {db_id}")
         elif getattr(self, 'backtesting_mode', False):
-            print(f"📝 Position created (backtesting mode - not saved to database)")
+            print(f"[*] Position created (backtesting mode - not saved to database)")
         
         self.current_position = position
         
@@ -219,15 +256,17 @@ class EnhancedPositionManager:
         
         return True
     
-    def enter_long_position(self, price: float, timestamp: datetime, atr: float, 
-                           quantity: float = 0.0, order_id: str = None) -> bool:
+    def enter_long_position(self, price: float, timestamp: datetime, atr: float,
+                           quantity: float = 0.0, order_id: str = None,
+                           market_regime: str = 'normal') -> bool:
         """Enter a long position"""
-        return self.enter_position("LONG", price, timestamp, atr, quantity, order_id)
-    
+        return self.enter_position("LONG", price, timestamp, atr, quantity, order_id, market_regime)
+
     def enter_short_position(self, price: float, timestamp: datetime, atr: float,
-                            quantity: float = 0.0, order_id: str = None) -> bool:
+                            quantity: float = 0.0, order_id: str = None,
+                            market_regime: str = 'normal') -> bool:
         """Enter a short position"""
-        return self.enter_position("SHORT", price, timestamp, atr, quantity, order_id)
+        return self.enter_position("SHORT", price, timestamp, atr, quantity, order_id, market_regime)
     
     def update_trailing_stop(self, current_price: float, atr: float):
         """Update trailing stop loss with dynamic trailing based on profit level"""
@@ -387,11 +426,11 @@ class EnhancedPositionManager:
                     exit_reason=exit_reason,
                     exit_order_id=exit_order_id
                 )
-                print(f"💾 Position closed in database. P&L: {db_trade.pnl_percent:+.2f}%")
+                print(f"[*] Position closed in database. P&L: {db_trade.pnl_percent:+.2f}%")
             except Exception as e:
                 print(f"Warning: Could not close position in database: {e}")
         elif getattr(self, 'backtesting_mode', False):
-            print(f"📝 Position closed (backtesting mode - not saved to database)")
+            print(f"[*] Position closed (backtesting mode - not saved to database)")
         
         # Add to local trade history
         self.trade_history.append(trade)

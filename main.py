@@ -22,10 +22,11 @@ if sys.platform == 'win32':
 from config import TradingConfig, DEFAULT_CONFIG, SCALPING_CONFIG, SWING_CONFIG, CONSERVATIVE_CONFIG
 
 # Import core components
-from binance_provider import BinanceDataProvider, LiveTradingSystem
+from binance_provider import BinanceDataProvider, LiveTradingSystem, PaperTradingProvider
 from trading_system import ProTradingSystem
 from database import get_database
 from position_manager import EnhancedPositionManager
+from telegram_notifier import get_telegram_notifier
 
 
 def setup_api_keys():
@@ -34,7 +35,7 @@ def setup_api_keys():
     api_secret = os.getenv('BINANCE_API_SECRET')
     
     if not api_key or not api_secret:
-        print("\n🔑 Binance API Configuration")
+        print("\n[*] Binance API Configuration")
         print("="*40)
         print("For live trading, you need Binance API credentials.")
         print("You can set them as environment variables:")
@@ -71,7 +72,7 @@ def run_backtest_demo(symbol: str = "BTCUSDT", config: TradingConfig = None,
     if not validate_date(start_date, "start date") or not validate_date(end_date, "end date"):
         return
     
-    print(f"\n🚀 Starting Pro Trader System Backtest for {symbol}")
+    print(f"\n[*] Starting Pro Trader System Backtest for {symbol}")
     print("="*60)
     
     # Initialize system
@@ -79,8 +80,8 @@ def run_backtest_demo(symbol: str = "BTCUSDT", config: TradingConfig = None,
     
     try:
         # Fetch data
-        print("📊 Fetching market data...")
-        data = trading_system.fetch_data(symbol, start_date=start_date)
+        print("[*] Fetching market data...")
+        data = trading_system.fetch_data(symbol, start_date=start_date, end_date=end_date)
         print(f"✅ Loaded {len(data)} bars of data from {data.index[0].date()} to {data.index[-1].date()}")
         
         # Show warning if requested start date differs from actual data start
@@ -90,7 +91,7 @@ def run_backtest_demo(symbol: str = "BTCUSDT", config: TradingConfig = None,
             print(f"    The backtest will run on the available data range: {data.index[0].date()} to {data.index[-1].date()}")
         
         # Calculate signals
-        print("🔍 Calculating technical indicators and signals...")
+        print("[*] Calculating technical indicators and signals...")
         signals = trading_system.calculate_signals()
         print("✅ Signals calculated successfully")
         
@@ -98,7 +99,7 @@ def run_backtest_demo(symbol: str = "BTCUSDT", config: TradingConfig = None,
         print("⚡ Running backtest simulation...")
         if start_date or end_date:
             date_info = f" (from {start_date or 'start'} to {end_date or 'end'})"
-            print(f"📅 Date range specified{date_info}")
+            print(f"[*] Date range specified{date_info}")
         results = trading_system.run_backtest(start_date=start_date, end_date=end_date)
         print(f"✅ Backtest completed with {len(results['trades'])} trades")
         
@@ -106,7 +107,7 @@ def run_backtest_demo(symbol: str = "BTCUSDT", config: TradingConfig = None,
         if len(results['data']) > 0:
             actual_start = results['data'].index[0].date()
             actual_end = results['data'].index[-1].date()
-            print(f"📊 Actual backtest period: {actual_start} to {actual_end}")
+            print(f"[*] Actual backtest period: {actual_start} to {actual_end}")
         
         # Print statistics
         trading_system.print_statistics(results)
@@ -119,24 +120,24 @@ def run_backtest_demo(symbol: str = "BTCUSDT", config: TradingConfig = None,
         
         # Show current signals
         current_signals = trading_system.get_live_signals()
-        print("\n📡 CURRENT LIVE SIGNALS:")
+        print("\n[*] CURRENT LIVE SIGNALS:")
         print("-" * 30)
         if current_signals['buy_signal']:
-            print("🟢 BUY SIGNAL DETECTED!")
+            print("[*] BUY SIGNAL DETECTED!")
         elif current_signals['sell_signal']:
-            print("🔴 SELL SIGNAL DETECTED!")
+            print("[*] SELL SIGNAL DETECTED!")
         elif current_signals['buy_setup']:
-            print("🟡 BUY SETUP - Waiting for trigger")
+            print("[*] BUY SETUP - Waiting for trigger")
         elif current_signals['sell_setup']:
-            print("🟡 SELL SETUP - Waiting for trigger")
+            print("[*] SELL SETUP - Waiting for trigger")
         else:
             print("⚪ No active signals")
         
         if current_signals['in_trade']:
-            print("📍 Currently in trade")
+            print("[*] Currently in trade")
         
         # Show market status summary
-        print(f"\n📊 CURRENT MARKET STATUS:")
+        print(f"\n[*] CURRENT MARKET STATUS:")
         print("-" * 30)
         print(f"Price: ${market_status['price']:.2f}")
         print(f"Trend: {market_status['trend']['status']} ({market_status['trend']['percentage']:+.1f}%)")
@@ -160,7 +161,7 @@ def run_live_monitoring(symbol: str = "BTCUSDT", config: TradingConfig = None):
     if config is None:
         config = DEFAULT_CONFIG
         
-    print(f"\n🔴 Starting Live Monitoring for {symbol}")
+    print(f"\n[*] Starting Live Monitoring for {symbol}")
     print("="*60)
     print("Note: This is monitoring using the latest available data")
     
@@ -175,7 +176,7 @@ def run_live_monitoring(symbol: str = "BTCUSDT", config: TradingConfig = None):
         market_status = trading_system.get_current_market_status()
         current_signals = trading_system.get_live_signals()
         
-        print(f"\n📊 LIVE MARKET STATUS for {symbol}")
+        print(f"\n[*] LIVE MARKET STATUS for {symbol}")
         print(f"Time: {market_status['timestamp']}")
         print(f"Price: ${market_status['price']:.2f}")
         print("-" * 40)
@@ -199,15 +200,15 @@ def run_live_monitoring(symbol: str = "BTCUSDT", config: TradingConfig = None):
             print(f"P&L:       {position['pnl_percent']:+.2f}%")
             print(f"R:R Ratio: {position['risk_reward']:.1f}")
         
-        print("\n🚨 SIGNAL STATUS:")
+        print("\n[*] SIGNAL STATUS:")
         if current_signals['buy_signal']:
-            print("🟢 STRONG BUY SIGNAL - Enter Long Position!")
+            print("[*] STRONG BUY SIGNAL - Enter Long Position!")
         elif current_signals['sell_signal']:
-            print("🔴 STRONG SELL SIGNAL - Enter Short Position!")
+            print("[*] STRONG SELL SIGNAL - Enter Short Position!")
         elif current_signals['buy_setup']:
-            print("🟡 BUY SETUP DETECTED - Watch for trigger...")
+            print("[*] BUY SETUP DETECTED - Watch for trigger...")
         elif current_signals['sell_setup']:
-            print("🟡 SELL SETUP DETECTED - Watch for trigger...")
+            print("[*] SELL SETUP DETECTED - Watch for trigger...")
         else:
             print("⚪ No active signals - Wait for setup")
         
@@ -222,68 +223,104 @@ def run_live_trading(symbol: str = "BTCUSDT", config: TradingConfig = None, posi
     """Run live trading with real-time execution"""
     if config is None:
         config = DEFAULT_CONFIG
-        
-    print(f"\n🔴 Starting LIVE TRADING for {symbol}")
+
+    # Determine trading mode
+    is_paper_trading = config.paper_trading
+    trading_mode = "PAPER TRADING" if is_paper_trading else "LIVE TRADING"
+
+    print(f"\n[*] Starting {trading_mode} for {symbol}")
     print("="*60)
-    print("⚠️  WARNING: This is LIVE TRADING with real market orders!")
-    print("💰 Make sure you understand the risks before proceeding.")
-    
-    # Setup API keys
-    api_key, api_secret = setup_api_keys()
-    
-    if not api_key or not api_secret:
-        print("❌ API credentials required for live trading")
-        return None
-    
-    # Confirm live trading
-    print(f"\n📊 Trading Configuration:")
+
+    if not is_paper_trading:
+        print("⚠️  WARNING: This is LIVE TRADING with real market orders!")
+        print("[*] Make sure you understand the risks before proceeding.")
+    else:
+        print("[*] Paper Trading Mode - No real orders will be placed")
+        print(f"[*] Starting with ${config.initial_paper_balance:,.2f} virtual balance")
+
+    # Initialize Telegram notifications
+    telegram = None
+    if config.enable_telegram:
+        telegram = get_telegram_notifier()
+        if telegram.enabled:
+            telegram.notify_system_start(symbol, trading_mode, "DEFAULT")
+
+    # Setup trading provider based on mode
+    if is_paper_trading:
+        # Paper trading mode
+        trading_provider = PaperTradingProvider(config.initial_paper_balance)
+        # Still need Binance for market data
+        binance_data = BinanceDataProvider(config)
+    else:
+        # Real trading mode - setup API keys
+        api_key, api_secret = setup_api_keys()
+
+        if not api_key or not api_secret:
+            print("❌ API credentials required for live trading")
+            if telegram:
+                telegram.notify_error('STARTUP_ERROR', 'API credentials missing for live trading')
+            return None
+
+        trading_provider = BinanceDataProvider(config, api_key, api_secret)
+        binance_data = trading_provider
+
+        if not trading_provider.is_live_trading:
+            print("❌ Could not initialize live trading - check API credentials")
+            if telegram:
+                telegram.notify_error('STARTUP_ERROR', 'Failed to initialize live trading API')
+            return None
+
+    # Confirm trading
+    print(f"\n[*] Trading Configuration:")
+    print(f"Mode: {trading_mode}")
     print(f"Symbol: {symbol}")
     print(f"Position Size: ${position_size} USDT")
     print(f"Interval: {config.interval}")
     print(f"Stop Loss: {config.stop_loss_multiplier}x ATR")
     print(f"Take Profit: {config.take_profit_1_multiplier}x / {config.take_profit_2_multiplier}x ATR")
-    
-    confirm = input("\nType 'START' to begin live trading: ")
+    print(f"Telegram Notifications: {'Enabled' if telegram and telegram.enabled else 'Disabled'}")
+
+    confirm = input("\nType 'START' to begin trading: ")
     if confirm.upper() != 'START':
-        print("❌ Live trading cancelled by user")
+        print("❌ Trading cancelled by user")
+        if telegram:
+            telegram.notify_system_stop()
         return None
     
     try:
-        # Initialize Binance provider with API credentials
-        binance_provider = BinanceDataProvider(config, api_key, api_secret)
-        
-        if not binance_provider.is_live_trading:
-            print("❌ Could not initialize live trading - check API credentials")
-            return None
-        
-        # Initialize live trading system
-        live_system = LiveTradingSystem(config, binance_provider)
+        # Initialize live trading system with provider and Telegram
+        live_system = LiveTradingSystem(config, trading_provider, telegram)
         live_system.set_position_size(position_size)
-        
+
         # Check account balance
-        balance = binance_provider.get_account_balance('USDT')
-        print(f"\n💰 USDT Balance: ${balance:.2f}")
-        
-        if balance < position_size:
+        balance = trading_provider.get_account_balance('USDT')
+        print(f"\n[*] USDT Balance: ${balance:.2f}")
+
+        if not is_paper_trading and balance < position_size:
             print(f"⚠️ Warning: Balance (${balance:.2f}) is less than position size (${position_size})")
             confirm_low_balance = input("Continue anyway? (type 'YES'): ")
             if confirm_low_balance.upper() != 'YES':
                 print("❌ Trading cancelled due to insufficient balance")
+                if telegram:
+                    telegram.notify_system_stop()
                 return None
-        
-        # Fetch initial data
-        print("📊 Fetching initial data...")
+
+        # Fetch initial data using binance_data for market data
+        print("[*] Fetching initial data...")
         data = live_system.fetch_initial_data(symbol, config.interval, days=30)
-        
+
+
         if data is None:
             print("❌ Could not fetch initial data")
+            if telegram:
+                telegram.notify_error('DATA_ERROR', 'Could not fetch initial market data')
             return None
-        
+
         # Initialize trading system
         trading_system = ProTradingSystem(config)
         trading_system.data = data
         trading_system.calculate_signals()
-        
+
         def trading_callback(kline_data, new_row):
             """Handle trading signals from live data"""
             try:
@@ -313,7 +350,7 @@ def run_live_trading(symbol: str = "BTCUSDT", config: TradingConfig = None, posi
                     
                     # Execute buy signals
                     if signals['buy_signal'] and not signals['in_trade']:
-                        print(f"\n🟢 BUY SIGNAL TRIGGERED at ${current_price:.4f}")
+                        print(f"\n[*] BUY SIGNAL TRIGGERED at ${current_price:.4f}")
                         result = live_system.execute_buy_signal(symbol, current_price, signal_data)
                         
                         if result['success']:
@@ -323,7 +360,7 @@ def run_live_trading(symbol: str = "BTCUSDT", config: TradingConfig = None, posi
                     
                     # Execute sell signals (position exits)  
                     elif signals['sell_signal'] and signals['in_trade']:
-                        print(f"\n🔴 SELL SIGNAL TRIGGERED at ${current_price:.4f}")
+                        print(f"\n[*] SELL SIGNAL TRIGGERED at ${current_price:.4f}")
                         result = live_system.execute_sell_signal(symbol, current_price, signal_data)
                         
                         if result['success']:
@@ -342,13 +379,13 @@ def run_live_trading(symbol: str = "BTCUSDT", config: TradingConfig = None, posi
         
         if success:
             print(f"\n✨ Live trading active for {symbol}")
-            print("📊 Monitor your positions carefully!")
-            print("💡 Press Ctrl+C to stop live trading")
+            print("[*] Monitor your positions carefully!")
+            print("[*] Press Ctrl+C to stop live trading")
             
             # Show portfolio status
             portfolio = live_system.get_portfolio_status()
             if 'error' not in portfolio:
-                print(f"\n💼 Portfolio Status:")
+                print(f"\n[*] Portfolio Status:")
                 print(f"Balance: ${portfolio['account_balance_usdt']:.2f} USDT")
                 print(f"Active Positions: {len(portfolio['active_positions'])}")
             
@@ -358,22 +395,33 @@ def run_live_trading(symbol: str = "BTCUSDT", config: TradingConfig = None, posi
                 while True:
                     time.sleep(1)
             except KeyboardInterrupt:
-                print("\n🛑 Stopping live trading...")
+                print("\n[*] Stopping live trading...")
                 live_system.stop_monitoring()
-                
+
                 # Show final portfolio status
                 portfolio = live_system.get_portfolio_status()
                 if 'statistics' in portfolio:
                     stats = portfolio['statistics']
-                    print(f"\n📊 Final Statistics:")
+                    print(f"\n[*] Final Statistics:")
                     print(f"Total Trades: {stats['total_trades']}")
                     print(f"Win Rate: {stats['win_rate']:.1f}%")
                     print(f"Total P&L: ${stats['total_amount_pnl']:.2f}")
-        
+
+                    # Send final summary via Telegram
+                    if telegram:
+                        telegram.notify_portfolio_summary(
+                            balance, len(portfolio['active_positions']),
+                            stats['total_trades'], stats['win_rate'],
+                            stats['total_pnl'], is_paper_trading
+                        )
+                        telegram.notify_system_stop()
+
         return live_system
-        
+
     except Exception as e:
         print(f"❌ Error in live trading: {str(e)}")
+        if telegram:
+            telegram.notify_error('LIVE_TRADING_ERROR', str(e))
         return None
 
 
@@ -384,14 +432,14 @@ def show_portfolio_status():
         portfolio = db.get_portfolio_summary()
         stats = db.get_statistics()
         
-        print("\n💼 PORTFOLIO STATUS")
+        print("\n[*] PORTFOLIO STATUS")
         print("="*50)
         
-        print(f"📊 Active Positions: {len(portfolio['active_positions'])}")
+        print(f"[*] Active Positions: {len(portfolio['active_positions'])}")
         for pos in portfolio['active_positions']:
             print(f"  • {pos['symbol']}: {pos['count']} positions, Avg Entry: ${pos['avg_entry']:.4f}")
         
-        print(f"\n📈 Trading Statistics:")
+        print(f"\n[*] Trading Statistics:")
         print(f"Total Trades: {stats['total_trades']}")
         print(f"Win Rate: {stats['win_rate']:.1f}%")
         print(f"Total P&L: {stats['total_pnl']:+.2f}%")
@@ -399,7 +447,7 @@ def show_portfolio_status():
         print(f"Max Drawdown: {stats['max_drawdown']:.2f}%")
         print(f"Profit Factor: {stats['profit_factor']:.2f}")
         
-        print(f"\n💰 Trade Summary by Symbol:")
+        print(f"\n[*] Trade Summary by Symbol:")
         for trade in portfolio['trade_summary']:
             print(f"  • {trade['symbol']}: {trade['total_trades']} trades, "
                   f"${trade['total_pnl_amount']:+.2f}, "
@@ -423,17 +471,18 @@ def main():
     """Main function with command line interface"""
     parser = argparse.ArgumentParser(description="Pro Trader System - Live Trading Application")
     parser.add_argument('--symbol', '-s', default='BTCUSDT', help='Trading symbol (default: BTCUSDT)')
-    parser.add_argument('--mode', '-m', choices=['backtest', 'monitor', 'trade', 'portfolio', 'export'], 
+    parser.add_argument('--mode', '-m', choices=['backtest', 'monitor', 'trade', 'portfolio', 'export', 'dashboard'],
                        default='backtest', help='Running mode')
     parser.add_argument('--config', '-c', choices=['default', 'scalping', 'swing', 'conservative'],
                        default='default', help='Trading configuration')
     parser.add_argument('--period', '-p', default='2y', help='Data period (default: 2y)')
     parser.add_argument('--interval', '-i', help='Trading interval (1m, 5m, 1h, 1d, etc.)')
     parser.add_argument('--position-size', type=float, default=100.0, help='Position size in USDT for live trading')
-    parser.add_argument('--export-table', choices=['trades', 'positions', 'signals'], default='trades', 
+    parser.add_argument('--export-table', choices=['trades', 'positions', 'signals'], default='trades',
                        help='Table to export (for export mode)')
     parser.add_argument('--start-date', help='Backtest start date (YYYY-MM-DD format), e.g., 2024-01-01')
     parser.add_argument('--end-date', help='Backtest end date (YYYY-MM-DD format), e.g., 2024-12-31')
+    parser.add_argument('--dashboard-port', type=int, default=5000, help='Dashboard server port (default: 5000)')
     
     args = parser.parse_args()
     
@@ -475,7 +524,13 @@ def main():
             
         elif args.mode == 'export':
             export_data(args.export_table)
-            
+
+        elif args.mode == 'dashboard':
+            from dashboard import start_dashboard
+            print("[*] Starting web dashboard...")
+            print(f"[*] Access at: http://127.0.0.1:{args.dashboard_port}")
+            start_dashboard(port=args.dashboard_port)
+
         print(f"\n✅ {args.mode.upper()} completed successfully!")
         
     except KeyboardInterrupt:

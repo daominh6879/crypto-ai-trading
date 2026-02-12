@@ -8,8 +8,15 @@ websocket-client>=1.6.0
 requests>=2.28.0
 
 # Technical Analysis
-talib-binary>=0.4.24
+# talib-binary>=0.4.24  # Optional - Not required, we use custom indicators
 scipy>=1.9.0
 
 # Console Output
 colorama>=0.4.6
+
+# Web Dashboard
+flask>=2.3.0
+flask-cors>=4.0.0
+
+# Environment Variables (Optional)
+python-dotenv>=1.0.0

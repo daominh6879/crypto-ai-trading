@@ -87,9 +87,9 @@ class TechnicalIndicators:
         """Calculate Average True Range"""
         if HAS_TALIB:
             return talib.ATR(
-                data['High'], 
-                data['Low'], 
-                data['Close'], 
+                data['High'],
+                data['Low'],
+                data['Close'],
                 timeperiod=self.config.atr_length
             )
         else:
@@ -97,14 +97,65 @@ class TechnicalIndicators:
             high = data['High']
             low = data['Low']
             close = data['Close']
-            
+
             tr1 = high - low
             tr2 = abs(high - close.shift())
             tr3 = abs(low - close.shift())
-            
+
             true_range = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
             atr = true_range.rolling(window=self.config.atr_length).mean()
             return atr
+
+    def calculate_adx(self, data: pd.DataFrame) -> Dict[str, pd.Series]:
+        """Calculate ADX (Average Directional Index) for trend strength measurement"""
+        high = data['High']
+        low = data['Low']
+        close = data['Close']
+
+        adx_period = getattr(self.config, 'adx_length', 14)
+
+        if HAS_TALIB:
+            adx = talib.ADX(high, low, close, timeperiod=adx_period)
+            plus_di = talib.PLUS_DI(high, low, close, timeperiod=adx_period)
+            minus_di = talib.MINUS_DI(high, low, close, timeperiod=adx_period)
+        else:
+            # Pandas fallback ADX calculation
+            # Calculate True Range
+            tr1 = high - low
+            tr2 = abs(high - close.shift())
+            tr3 = abs(low - close.shift())
+            true_range = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+
+            # Calculate directional movement
+            up_move = high - high.shift()
+            down_move = low.shift() - low
+
+            plus_dm = pd.Series(0.0, index=data.index)
+            minus_dm = pd.Series(0.0, index=data.index)
+
+            plus_dm[(up_move > down_move) & (up_move > 0)] = up_move
+            minus_dm[(down_move > up_move) & (down_move > 0)] = down_move
+
+            # Smooth the values
+            atr_smooth = true_range.rolling(window=adx_period).mean()
+            plus_dm_smooth = plus_dm.rolling(window=adx_period).mean()
+            minus_dm_smooth = minus_dm.rolling(window=adx_period).mean()
+
+            # Calculate DI+ and DI-
+            plus_di = 100 * (plus_dm_smooth / atr_smooth)
+            minus_di = 100 * (minus_dm_smooth / atr_smooth)
+
+            # Calculate DX
+            dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di)
+
+            # Calculate ADX (smoothed DX)
+            adx = dx.rolling(window=adx_period).mean()
+
+        return {
+            'adx': adx,
+            'plus_di': plus_di,
+            'minus_di': minus_di
+        }
     
     def calculate_trend_analysis(self, ema_data: Dict[str, pd.Series], 
                                close: pd.Series) -> Dict[str, pd.Series]:
@@ -282,25 +333,27 @@ class TechnicalIndicators:
         rsi = self.calculate_rsi(data)
         macd_data = self.calculate_macd(data)
         atr = self.calculate_atr(data)
-        
+        adx_data = self.calculate_adx(data)
+
         # Analysis
         trend_analysis = self.calculate_trend_analysis(ema_data, data['Close'])
         momentum_analysis = self.calculate_momentum_analysis(rsi, macd_data)
         price_action = self.calculate_price_action(data)
         volume_analysis = self.calculate_volume_analysis(data)
-        
+
         # Create base indicators dict
         indicators_base = {
             'ema': ema_data,
             'rsi': rsi,
             'macd': macd_data,
             'atr': atr,
+            'adx': adx_data,
             'trend': trend_analysis,
             'momentum': momentum_analysis,
             'price_action': price_action,
             'volume': volume_analysis
         }
-        
+
         # Add advanced conditions
         try:
             advanced_conditions = self.calculate_advanced_conditions(indicators_base, data)
@@ -309,7 +362,7 @@ class TechnicalIndicators:
             print(f"❌ Error calculating advanced conditions: {e}")
             # Provide fallback empty advanced conditions
             indicators_base['advanced'] = {}
-        
+
         return indicators_base
     
     def calculate_advanced_conditions(self, indicators: Dict[str, Any], data: pd.DataFrame) -> Dict[str, pd.Series]:
@@ -324,19 +377,24 @@ class TechnicalIndicators:
         rsi = indicators['rsi']
         macd_line = indicators['macd']['macd_line']
         signal_line = indicators['macd']['signal_line']
-        
+
+        # ADX indicators for market regime
+        adx = indicators['adx']['adx']
+        plus_di = indicators['adx']['plus_di']
+        minus_di = indicators['adx']['minus_di']
+
         # 1. TREND STRENGTH ANALYSIS
         # EMA separation as % of price (stronger trends have wider separation)
         ema_separation_bull = ((ema_20 - ema_50) / close) * 100
         ema_separation_bear = ((ema_50 - ema_20) / close) * 100
         strong_bull_trend = ema_separation_bull > 0.5  # 0.5% minimum separation
         strong_bear_trend = ema_separation_bear > 0.5
-        
+
         # Price momentum (price distance from EMAs)
         price_above_ema20 = ((close - ema_20) / close) * 100
         price_momentum_bull = price_above_ema20 > 1.0  # Price 1%+ above EMA20
         price_momentum_bear = price_above_ema20 < -1.0  # Price 1%+ below EMA20
-        
+
         # 2. VOLATILITY FILTERING
         # ATR-based volatility classification
         atr_pct = (atr / close) * 100
@@ -344,27 +402,55 @@ class TechnicalIndicators:
         high_volatility = atr_pct > atr_sma * 1.5  # 50% above average volatility
         low_volatility = atr_pct < atr_sma * 0.7   # 30% below average volatility
         normal_volatility = ~(high_volatility | low_volatility)
-        
-        # 3. MARKET PHASE DETECTION
+
+        # 3. MARKET PHASE DETECTION (Old method - keep for compatibility)
         # Trending vs Ranging market detection
         price_range_20 = high.rolling(20).max() - low.rolling(20).min()
         price_movement = abs(close - close.shift(20))
-        trending_market = price_movement > (price_range_20 * 0.6)  # 60% of range covered
-        ranging_market = ~trending_market
-        
-        # 4. RSI MOMENTUM QUALITY
+        trending_market_old = price_movement > (price_range_20 * 0.6)  # 60% of range covered
+        ranging_market_old = ~trending_market_old
+
+        # 4. ADX-BASED MARKET REGIME DETECTION (New - Primary method)
+        # Get thresholds from config with defaults
+        adx_trending_threshold = getattr(self.config, 'adx_trending_threshold', 25)
+        adx_ranging_threshold = getattr(self.config, 'adx_ranging_threshold', 20)
+        adx_strong_trend_threshold = getattr(self.config, 'adx_strong_trend_threshold', 30)
+
+        # Market regime classification based on ADX
+        adx_strong_trending = adx > adx_strong_trend_threshold  # ADX > 30: Very strong trend
+        adx_trending = adx > adx_trending_threshold  # ADX > 25: Trending market
+        adx_choppy = adx < adx_ranging_threshold  # ADX < 20: Choppy/ranging market
+        adx_neutral = (adx >= adx_ranging_threshold) & (adx <= adx_trending_threshold)  # ADX 20-25: Neutral
+
+        # Directional bias from DI lines
+        adx_bullish_trend = (plus_di > minus_di) & adx_trending
+        adx_bearish_trend = (minus_di > plus_di) & adx_trending
+
+        # Combined trending market detection (ADX + old method for robustness)
+        trending_market = adx_trending | trending_market_old
+        ranging_market = adx_choppy & ranging_market_old
+
+        # 5. MARKET REGIME FOR ADAPTIVE PARAMETERS
+        # Strong trending: Use wider stops, bigger targets, fewer trades
+        # Choppy: Use tighter stops, smaller targets, more selective
+        regime_strong_trending = adx_strong_trending
+        regime_normal_trending = adx_trending & ~adx_strong_trending
+        regime_choppy = adx_choppy
+        regime_neutral = adx_neutral
+
+        # 6. RSI MOMENTUM QUALITY
         # RSI slope for momentum confirmation
         rsi_slope = rsi - rsi.shift(3)
         rsi_bull_momentum = (rsi > 45) & (rsi < 75) & (rsi_slope > 2)  # Rising RSI in good range
         rsi_bear_momentum = (rsi < 55) & (rsi > 25) & (rsi_slope < -2)  # Falling RSI in good range
-        
-        # 5. MACD QUALITY
+
+        # 7. MACD QUALITY
         # MACD histogram acceleration
         histogram = indicators['macd']['histogram']
         histogram_slope = histogram - histogram.shift(2)
         macd_accelerating_bull = (macd_line > signal_line) & (histogram_slope > 0)
         macd_accelerating_bear = (macd_line < signal_line) & (histogram_slope < 0)
-        
+
         return {
             'strong_bull_trend': strong_bull_trend,
             'strong_bear_trend': strong_bear_trend,
@@ -381,7 +467,21 @@ class TechnicalIndicators:
             'macd_accelerating_bear': macd_accelerating_bear,
             'ema_separation_bull': ema_separation_bull,
             'ema_separation_bear': ema_separation_bear,
-            'atr_pct': atr_pct
+            'atr_pct': atr_pct,
+            # ADX-based regime detection
+            'adx': adx,
+            'plus_di': plus_di,
+            'minus_di': minus_di,
+            'adx_strong_trending': adx_strong_trending,
+            'adx_trending': adx_trending,
+            'adx_choppy': adx_choppy,
+            'adx_neutral': adx_neutral,
+            'adx_bullish_trend': adx_bullish_trend,
+            'adx_bearish_trend': adx_bearish_trend,
+            'regime_strong_trending': regime_strong_trending,
+            'regime_normal_trending': regime_normal_trending,
+            'regime_choppy': regime_choppy,
+            'regime_neutral': regime_neutral
         }
 
     def get_setup_signals(self, indicators: Dict[str, Any]) -> Dict[str, pd.Series]:

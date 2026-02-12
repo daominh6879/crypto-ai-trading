@@ -1,0 +1,53 @@
+
+================================================================================
+FINDING OPTIMAL ADX THRESHOLDS
+================================================================================
+
+
+################################################################################
+# Bear/Choppy: 2022-01-01 to 2023-01-01
+################################################################################
+
+================================================================================
+Analyzing ADX for 2022-01-01 to 2023-01-01
+================================================================================
+
+Warning: Could not initialize Binance client: 'charmap' codec can't encode character '\U0001f4ca' in position 0: character maps to <undefined>
+Continuing with public data access only...
+[*] Fetching data...
+[*] _fetch_binance_data called with start_date=2022-01-01, end_date=2023-01-01
+[*] Using comprehensive fetching for start_date: 2022-01-01, end_date: 2023-01-01
+[*] Fetching comprehensive data from 2022-01-01 to 2023-01-01...
+[*] Estimated 8,784 bars needed over 366 days
+[*] Will fetch in up to 9 chunks of 1000 bars each
+   Fetching chunk 1/9 starting from 2022-01-01...
+   Fetching chunk 2/9 starting from 2022-02-11 16:00:00...
+   Fetching chunk 3/9 starting from 2022-03-25 08:00:00...
+   Fetching chunk 4/9 starting from 2022-05-06 00:00:00...
+   Fetching chunk 5/9 starting from 2022-06-16 16:00:00...
+   Fetching chunk 6/9 starting from 2022-07-28 08:00:00...
+   Fetching chunk 7/9 starting from 2022-09-08 00:00:00...
+   Fetching chunk 8/9 starting from 2022-10-19 16:00:00...
+   Fetching chunk 9/9 starting from 2022-11-30 08:00:00...
+   Reached end of available data (fetched 1000 bars)
+[OK] Successfully fetched 9,000 bars from 2022-01-01 to 2023-01-10
+[*] Data coverage: 102.5% of estimated 8,784 bars
+[*] Calculating indicators...
+[*] Running backtest...
+Traceback (most recent call last):
+  File "C:\Users\HungDao\sources\crypto-ai-trading\analyze_adx.py", line 158, in <module>
+    results = find_optimal_thresholds()
+  File "C:\Users\HungDao\sources\crypto-ai-trading\analyze_adx.py", line 135, in find_optimal_thresholds
+    result = analyze_adx_for_period(start, end)
+  File "C:\Users\HungDao\sources\crypto-ai-trading\analyze_adx.py", line 29, in analyze_adx_for_period
+    results = trading_system.run_backtest(start_date=start_date, end_date=end_date)
+  File "C:\Users\HungDao\sources\crypto-ai-trading\trading_system.py", line 970, in run_backtest
+    self.position_manager.reset()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\HungDao\sources\crypto-ai-trading\position_manager.py", line 119, in reset
+    print("\U0001f504 Position manager reset for backtesting")
+    ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Python313\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\U0001f504' in position 0: character maps to <undefined>
