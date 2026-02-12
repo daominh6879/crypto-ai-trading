@@ -341,14 +341,16 @@ class ProTradingSystem:
             'strategy': 'Balanced Trend Following', 'risk_level': 'Medium-High'
         }
         
-        # CONSERVATIVE BEAR STRATEGY - Severe capital preservation for harsh bear markets like 2018
+        # ULTRA-CONSERVATIVE BEAR STRATEGY - Optimized for live trading robustness
         bear_config = {
-            'rsi_oversold': 25, 'rsi_overbought': 60,   # Much tighter range (was 30/65)
-            'adx_min': 25, 'adx_max': 35, 'min_bars_gap': 12,  # Higher gap (was 8, now 12)
-            'max_daily_trades': 1, 'enable_shorts': True,  # Only 1 trade per day (was 3)
-            'strategy': 'Conservative Active Trading', 'risk_level': 'Low',
-            'strict_trend_confirmation': True,  # Require strong trend confirmation
-            'enhanced_volatility_filter': True  # Extra volatility filtering
+            'rsi_oversold': 20, 'rsi_overbought': 55,   # Even tighter for better quality (was 25/60)
+            'adx_min': 25, 'adx_max': 35, 'min_bars_gap': 18,  # Larger gap to avoid whipsaws (was 12, now 18)
+            'max_daily_trades': 1, 'enable_shorts': True,  # Max 1 trade per day
+            'strategy': 'Conservative Active Trading', 'risk_level': 'Very Low',
+            'strict_trend_confirmation': True,
+            'enhanced_volatility_filter': True,
+            'require_momentum_confluence': True,  # Multiple momentum confirmations
+            'dynamic_position_sizing': 0.5  # Half position size in bear markets
         }
         
         # MODERATE VOLATILE STRATEGY - Handle chop without overexposure
@@ -656,43 +658,50 @@ class ProTradingSystem:
                     volume_sell_condition
                 )
             
-            # STRATEGY 2: BEAR MARKET - Ultra Conservative Trading (2018 Optimized)
+            # STRATEGY 2: BEAR MARKET - Ultra Conservative with Enhanced Quality (Live Trading Optimized)
             elif regime == 'bear':
-                # Enhanced bear market protection - avoid most volatile conditions
+                # Multi-layer volatility protection for live trading robustness
                 extreme_conditions = (
-                    (signals_df['close'].pct_change(5) < -0.10) |  # 10%+ crash in 5 bars (was 15%)
-                    (abs(signals_df['close'].pct_change()) > 0.07) |  # 7%+ single bar move (was 10%)
-                    (signals_df['rsi'].rolling(3).std() > 8)  # High RSI volatility
+                    (signals_df['close'].pct_change(5) < -0.08) |  # 8%+ crash in 5 bars (tighter)
+                    (abs(signals_df['close'].pct_change()) > 0.05) |  # 5%+ single bar move (tighter)
+                    (signals_df['rsi'].rolling(3).std() > 6) |  # RSI volatility (tighter)
+                    (signals_df['close'].rolling(10).std() / signals_df['close'].rolling(10).mean() > 0.04)  # Price volatility check
                 )
                 
-                # Additional market stress indicators
+                # Enhanced market stress detection
                 market_stress = (
                     (signals_df['close'] < signals_df.get('ema_200', signals_df['close'] * 1.05)) &  # Below 200 EMA
-                    (signals_df['adx_adx'] > 35)  # High volatility ADX
+                    (signals_df['adx_adx'] > 30) &  # High ADX (was 35, now 30)
+                    (signals_df['volume'] > signals_df['volume'].rolling(20).mean() * 1.5)  # High volume stress
+                )
+                
+                # Momentum confluence requirement
+                momentum_confluence = (
+                    (signals_df['rsi'] > signals_df['rsi'].shift(3)) &  # RSI rising for 3+ bars
+                    (signals_df['macd_line'] > signals_df['macd_line'].shift(2)) &  # MACD improving
+                    (signals_df['close'] > signals_df['close'].rolling(5).mean())  # Above 5-bar average
                 )
 
-                # ULTRA conservative bear market buy: only strongest setups
+                # ULTRA conservative bear market buy: maximum quality filter
                 buy_trigger = (
                     ~extreme_conditions &
                     ~market_stress &
-                    (
-                        # Only Option: Very strong reversal with multiple confirmations
-                        basic_buy_condition &
-                        (signals_df['rsi'] > 25) & (signals_df['rsi'] < 45) &  # Tight RSI range
-                        (signals_df['close'] > signals_df.get('ema_20', signals_df['close'] * 0.99)) &  # Above 20 EMA
-                        macd_bullish &
-                        (signals_df['rsi'] > signals_df['rsi'].shift(2))  # RSI rising for 2+ bars
-                    )
+                    basic_buy_condition &
+                    momentum_confluence &
+                    (signals_df['rsi'] > 20) & (signals_df['rsi'] < 40) &  # Very tight RSI (was 25-45)
+                    (signals_df['close'] > signals_df.get('ema_20', signals_df['close'] * 0.99)) &  # Above 20 EMA
+                    macd_bullish
                 )
 
-                # More selective shorts in bear markets
+                # Ultra-selective shorts with quality focus
                 sell_trigger = (
                     ~extreme_conditions &
-                    (signals_df['close'] < signals_df.get('ema_20', signals_df['close'] * 1.01)) &
-                    (signals_df['rsi'] > 60) &  # Higher threshold (was 55)
+                    (signals_df['close'] < signals_df.get('ema_50', signals_df['close'] * 1.02)) &  # Below 50 EMA (was 20)
+                    (signals_df['rsi'] > 65) &  # Higher threshold (was 60)
                     macd_bearish &
                     volume_sell_condition &
-                    (signals_df['adx_adx'] > 20)  # Require trending market
+                    (signals_df['adx_adx'] > 20) &  # Trending market
+                    (signals_df['rsi'] < signals_df['rsi'].shift(2))  # RSI declining
                 )
             
             # STRATEGY 3: VOLATILE MARKET - Ultra Selective Swing Trading
@@ -808,12 +817,12 @@ class ProTradingSystem:
         buy_final = buy_signal.copy()
         sell_final = sell_signal.copy()
 
-        # Dynamic gap based on market regime - much more conservative in bear markets (2018 optimized)
+        # Dynamic gap based on market regime - optimized for live trading stability
         current_regime = getattr(self, 'current_regime', 'sideways')
         if current_regime == 'bear':
-            min_gap = max(self.config.min_bars_gap, 15)  # Minimum 15 bars in bear markets (was 8)
+            min_gap = max(self.config.min_bars_gap, 20)  # Minimum 20 bars in bear markets (more selective)
         elif current_regime == 'volatile':
-            min_gap = max(self.config.min_bars_gap, 12)  # Minimum 12 bars in volatile markets
+            min_gap = max(self.config.min_bars_gap, 15)  # Minimum 15 bars in volatile markets
         elif current_regime == 'bull':
             min_gap = max(1, self.config.min_bars_gap // 2)  # REDUCED gap in bull markets for more opportunities
         else:
@@ -924,16 +933,31 @@ class ProTradingSystem:
                 self.current_regime = current_regime
                 self.adaptive_config = self.get_adaptive_config(current_regime)
 
-            # Periodic regime re-detection (weekly) using only past data
+            # Periodic regime re-detection with stability filtering (live trading optimized)
             if i > 0 and i % regime_update_interval == 0 and i >= min_regime_bars:
                 past_data = data.iloc[max(0, i - max_regime_lookback):i + 1]
                 new_regime = self.detect_market_regime(past_data, quiet=True)
-                if new_regime != current_regime:
-                    print(f"[*] Regime change at bar {i}: {current_regime.upper()} -> {new_regime.upper()}")
-                    current_regime = new_regime
-                    self.calculate_signals(regime_override=new_regime)
-                    filtered_signals = self.signals.loc[data.index] if len(self.signals) > 0 else None
-                    regime_changes += 1
+                
+                # STABILITY FILTER: Require regime to persist for multiple detection cycles
+                min_regime_persistence = regime_update_interval * 2  # Must persist for 2 cycles (2 weeks)
+                
+                # Check if we're in a recent regime change period
+                bars_since_last_change = i - getattr(self, 'last_regime_change_bar', 0)
+                
+                if new_regime != current_regime and bars_since_last_change >= min_regime_persistence:
+                    # Additional confirmation: check if new regime is stable over shorter timeframe
+                    shorter_data = data.iloc[max(0, i - regime_update_interval):i + 1]
+                    confirmation_regime = self.detect_market_regime(shorter_data, quiet=True)
+                    
+                    # Only change if both long and short timeframes agree
+                    if confirmation_regime == new_regime:
+                        print(f"[*] Regime change at bar {i}: {current_regime.upper()} -> {new_regime.upper()}")
+                        current_regime = new_regime
+                        self.last_regime_change_bar = i
+                        self.calculate_signals(regime_override=new_regime)
+                        filtered_signals = self.signals.loc[data.index] if len(self.signals) > 0 else None
+                        regime_changes += 1
+                    # else: Skip regime change due to instability
 
             # Get current bar signals
             if filtered_signals is not None and timestamp in filtered_signals.index:
