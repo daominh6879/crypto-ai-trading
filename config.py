@@ -26,23 +26,13 @@ class TradingConfig:
     macd_slow: int = 26
     macd_signal: int = 9
     
-    # ==================== TRADING RULES (BULL-MARKET OPTIMIZED) ====================
-    use_trend_filter: bool = True   # Only trade with EMA200 trend
-    min_bars_gap: int = 4          # Lower gap for bull markets (was 6, now 4)
-    require_confirmation: bool = True  # Wait for confirmation candle
-    allow_long_trades: bool = True    # Enable longs (disable in bear markets)
-    allow_short_trades: bool = True   # Enable shorts for both directions
-    require_pullback_entry: bool = False  # Keep simple
-
-    # Professional Signal Quality Controls (Bull-Market Optimized)
-    min_risk_reward_ratio: float = 2.5  # Lower R:R for more opportunities (was 2.8, now 2.5)
-    max_daily_trades: int = 6          # More trading opportunities (was 4, now 6)
+    # ==================== TRADING RULES ====================
+    min_bars_gap: int = 4          # Gap between signals 
     require_confluence: bool = False   # Disable confluence for more trades
-    ultra_strict_mode: bool = False     # Disabled for balanced trading
 
-    # Volatility Controls (Bull-Market Friendly)
-    max_volatility_threshold: float = 3.2  # Allow more volatility in bull markets (was 2.8, now 3.2)
-    min_trend_strength: float = 0.45       # Lower threshold for more opportunities (was 0.50, now 0.45)
+    # Volatility Controls 
+    max_volatility_threshold: float = 3.2  # Allow more volatility in bull markets 
+    min_trend_strength: float = 0.45       # Lower threshold for more opportunities
     
     # ==================== ADX & MARKET REGIME DETECTION ====================
     adx_length: int = 14                   # ADX calculation period
@@ -53,19 +43,9 @@ class TradingConfig:
     regime_lookback_days: int = 90            # Days to look back for regime detection (90 = ~3 months)
     adx_strong_trend_threshold: float = 35 # ADX > 35 = very strong trend (was 30, now 35)
 
-    # BALANCED ADX RANGE: 18-35 (Slightly expanded for more opportunities)
-    # Original research showed 20-30 was optimal, but we expand slightly:
-    # - ADX < 18 (choppy): Still avoid these
-    # - ADX 18-35 (tradeable): Expanded range for more opportunities ✓
-    # - ADX > 35 (extreme): Still avoid extreme volatility
-    # BALANCE: Keep quality but allow more trading opportunities
-
     # ==================== ADAPTIVE PARAMETERS ====================
-    # NOTE: Adaptive parameters can help in choppy markets but may reduce performance in trends
-    # Test both enabled/disabled to find what works best for your trading style
-    enable_adaptive_parameters: bool = True   # Enable dynamic risk parameters (stops/targets) based on market regime
-    enable_adaptive_gap_filtering: bool = False  # Enable adaptive min_bars_gap (NOT RECOMMENDED)
-    enable_regime_filter: bool = True        # Filter to optimal ADX range (20-30) - ENABLED based on data analysis
+    enable_adaptive_parameters: bool = True   # Enable dynamic risk parameters based on market regime
+    enable_regime_filter: bool = True        # Filter to optimal ADX range - ENABLED based on data analysis
 
     # ==================== RISK MANAGEMENT (SWING TRADING - BASE VALUES) ====================
     atr_length: int = 14
@@ -81,35 +61,17 @@ class TradingConfig:
     choppy_stop_loss_multiplier: float = 2.0      # Tighter stops in choppy markets
     choppy_take_profit_1_multiplier: float = 2.5  # Smaller targets
     choppy_take_profit_2_multiplier: float = 4.0  # More realistic targets
-    choppy_min_bars_gap: int = 12                 # Trade less frequently in chop
 
     # Adaptive parameters for STRONG TRENDING markets (wider for bigger moves)
     trending_stop_loss_multiplier: float = 3.5    # Wider stops for trends
     trending_take_profit_1_multiplier: float = 5.0  # Bigger targets
     trending_take_profit_2_multiplier: float = 10.0  # Huge targets for strong trends
-    trending_min_bars_gap: int = 6                # Same as default - don't reduce in trends (was 4)
-
-    # Enhanced Risk Controls
-    max_position_size: float = 0.015        # 1.5% max position size (reduced from 2%)
-    max_daily_loss: float = 0.05          # 5% max daily loss before stopping
-    max_drawdown_limit: float = 0.15      # 15% max drawdown before reducing size
-    
-    # ==================== DISPLAY SETTINGS ====================
-    show_moving_averages: bool = True
-    show_zones: bool = True  # Overbought/Oversold zones
-    show_levels: bool = True  # TP/SL levels
-    show_labels: bool = True  # Entry/Exit labels
     
     # ==================== DATA SETTINGS ====================
     symbol: str = "BTCUSDT"  # Default symbol
-    interval: str = "1d"   # Data interval (1m, 5m, 15m, 1h, 1d, etc.)
+    interval: str = "1h"   # Data interval (1m, 5m, 15m, 1h, 1d, etc.) - OPTIMIZED FOR A+ PERFORMANCE
     lookback_period: str = "1y"  # Get more data for better backtesting (was "2y")
     
-    # ==================== ALERT SETTINGS ====================
-    enable_alerts: bool = True
-    alert_sound: bool = False
-    log_trades: bool = True
-
     # ==================== TRADING MODE ====================
     paper_trading: bool = True  # True = Paper trading, False = Real trading
     enable_telegram: bool = True  # Enable Telegram notifications
@@ -164,8 +126,6 @@ SWING_CONFIG = TradingConfig(
 )
 
 CONSERVATIVE_CONFIG = TradingConfig(
-    use_trend_filter=True,
-    require_confirmation=True,
     rsi_oversold=25,
     rsi_overbought=75,
     min_bars_gap=5,
