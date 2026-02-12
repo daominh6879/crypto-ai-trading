@@ -243,9 +243,7 @@ class EnhancedPositionManager:
             db_id = self.db.save_position(db_position)
             position.db_id = db_id
             print(f"[*] Position saved to database with ID: {db_id}")
-        # elif getattr(self, 'backtesting_mode', False):
-            # print(f"[*] Position created (backtesting mode - not saved to database)")
-        
+
         self.current_position = position
         
         # Update signal tracking
@@ -429,9 +427,7 @@ class EnhancedPositionManager:
                 print(f"[*] Position closed in database. P&L: {db_trade.pnl_percent:+.2f}%")
             except Exception as e:
                 print(f"Warning: Could not close position in database: {e}")
-        # elif getattr(self, 'backtesting_mode', False):
-        #     print(f"[*] Position closed (backtesting mode - not saved to database)")
-        
+
         # Add to local trade history
         self.trade_history.append(trade)
         

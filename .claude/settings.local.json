@@ -8,7 +8,8 @@
       "Bash(python:*)",
       "Bash(.venv/Scripts/python.exe -m pip install:*)",
       "Bash(timeout 3 tail:*)",
-      "Bash(tee:*)"
+      "Bash(tee:*)",
+      "Bash(del check_config.py check_data.py debug_bear_conditions.py debug_calculations.py debug_rsi_2022.py trading_system_clean.py adx_analysis_complete.txt adx_analysis_output.txt BTCUSDT_trading_results.csv CLEANUP_SUMMARY.md PROJECT_STRUCTURE.md)"
     ]
   }
 }

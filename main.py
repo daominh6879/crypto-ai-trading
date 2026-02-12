@@ -310,7 +310,6 @@ def run_live_trading(symbol: str = "BTCUSDT", config: TradingConfig = None, posi
         print("[*] Fetching initial data...")
         data = live_system.fetch_initial_data(symbol, config.interval, days=30)
 
-
         if data is None:
             print("❌ Could not fetch initial data")
             if telegram:
